@@ -19,7 +19,9 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 181 probes, and the emulator is diffed against it.
+real cluster answered for 181 probes, and the emulator is diffed against it. A
+probe added since the last recording is reported as unrecorded rather than
+silently passing.
 
 ## Quick start
 
@@ -31,6 +33,11 @@ and the proxy in front of it.
 ```sh
 docker run --rm -p 5432:5432 ghcr.io/dreamescaper/dsql-emulator:latest
 ```
+
+Images are published to GHCR when a release is cut, for `linux/amd64` and
+`linux/arm64`, tagged with the release version (for example `1.2.3`) and with
+`latest` for a non-prerelease. Pin a version tag when you want a reproducible
+build.
 
 Then connect as a DSQL client would — TLS is required and the password is an
 opaque token:
@@ -63,6 +70,7 @@ host, _ := c.Host(ctx)
 port, _ := c.MappedPort(ctx, "5432")
 dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require",
     host, port.Port())
+conn, err := pgx.Connect(ctx, dsn)
 ```
 
 ## What it emulates
@@ -73,7 +81,7 @@ dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require
 | Dialect | Around forty rules over a real parse tree: `TRUNCATE`, extensions, triggers, extra databases, temporary and unlogged tables, `serial`, materialized views, `CREATE TABLE AS`, custom types, tablespaces, foreign tables, `VACUUM`, `LISTEN`/`NOTIFY`, `ALTER SYSTEM`, `MERGE`, `TABLESAMPLE`, text search, geometric types, and more |
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them |
-| Indexes | `CREATE INDEX ASYNC` rewritten and answered with a `job_id`; synchronous `CREATE INDEX` refused |
+| Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; synchronous `CREATE INDEX` refused |
 | OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
@@ -98,9 +106,10 @@ dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require
   messages mirror DSQL's meaning and drift.
 - **No control plane.** Cluster creation, IAM and tagging are out of scope;
   [LocalStack](https://docs.localstack.cloud/aws/services/dsql/) covers those.
-- The backing database needs the scripts in `docker/init/` (the `sys` schema
-  and the DML row-cap trigger). The image and `docker-compose.yml` provide
-  them; a hand-rolled PostgreSQL will not enforce the row cap.
+- The backing database needs the scripts in `docker/init/` (the `sys` schema and
+  `sys.jobs`, the DML row-cap trigger, and the `admin` role clients connect as).
+  The image and `docker-compose.yml` provide them; a hand-rolled PostgreSQL
+  will not enforce the row cap or accept the `admin` user.
 
 ## Configuration
 
@@ -136,6 +145,13 @@ concurrency, and the connection environment. Conflicting concurrency cases are
 recorded but not replayed, because PostgreSQL blocks where DSQL does not, so a
 replay would hang rather than diverge.
 
+## Releases
+
+Cut a release from the Actions tab with the `release` workflow and a
+`patch`/`minor`/`major` bump. It verifies the build and tests, computes the next
+version from the latest `v*` tag (so the first release is `v0.1.0`), creates the
+release, and publishes the image. The tag also becomes the Go module version.
+
 ## Development
 
 ```sh
@@ -145,6 +161,9 @@ make test-integration   # container-backed suites, requires Docker
 make vet
 make docker-build       # local image
 ```
+
+GitHub Actions runs the formatting check, `go vet`, the unit tests, the
+container-backed suites, and a Docker build on every push and pull request.
 
 `docs/PLAN.md` is the design and roadmap; `docs/PROGRESS.md` is the status log,
 including the decisions behind each choice and the gaps that remain.

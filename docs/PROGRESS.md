@@ -68,6 +68,10 @@ on the next baseline.
 Known limitation: `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already
 exists returns a job id with no row, because no build happened.
 
+Also refreshed the README: how images are versioned and published (multi-arch,
+on release), a Releases section, the CI checks, the full list of init scripts,
+and the unrecorded-probe behaviour.
+
 ### README, MIT license, and the admin role (2026-09-15)
 
 - `README.md` — what the emulator is for, quick starts for the published image,
