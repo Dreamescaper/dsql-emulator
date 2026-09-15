@@ -34,6 +34,36 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M7 (part 4) — data-type conformance probes (2026-09-15)
+
+Added a `types` group of 27 probes and recorded them, bringing the record to 92
+cases.
+
+- `types_supported_columns` and `types_alias_columns` declare a column of every
+  type the documentation lists as supported, with aliases and precision.
+- `types_roundtrip` inserts a row through all of them, and `types_runtime_array`,
+  `types_runtime_inet`, and `types_runtime_json_ops` cover the query-runtime
+  types the docs describe.
+- Twenty-one `type_unsupported_*` probes try the types that are absent from the
+  supported list, each cleaning up after itself in case it is unexpectedly
+  accepted.
+
+DSQL refused all twenty-one with `0A000` "datatype X not supported", including
+array columns (`datatype integer[] not supported`). The emulator was allowing
+them, so two rules were added: `unsupported_type` (a deny-list matching the
+documented unsupported families) and `array_column` (a new `column_array`
+predicate). The supported set needed no rule: the emulator forwards it.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `92 cases match the golden record`, and `--cleanup-only` confirms no
+`baseline_` objects remain. A leak found mid-run — the two new type tables were
+missing from the cleanup list — was fixed and the cluster re-checked clean.
+
+Known limit: the `unsupported_type` rule is a deny-list of the tested types and
+the documented families, not an allow-list. A type that is added to the
+documented set, or one absent from both the doc and the rule, is not enforced.
+
 ### M7 (part 3) — re-record with the M3 and backlog probes (2026-09-15)
 
 Recorded the twelve probes added since the first baseline, bringing the record

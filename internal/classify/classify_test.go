@@ -59,6 +59,12 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"set default isolation", "SET default_transaction_isolation = 'repeatable read'", "set_isolation", "0A000"},
 		{"synchronous index", "CREATE INDEX idx ON t (a)", "sync_index", "0A000"},
 		{"plpgsql function", "CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$", "create_function_language", "0A000"},
+		{"unsupported type money", "CREATE TABLE t (v money)", "unsupported_type", "0A000"},
+		{"unsupported type inet column", "CREATE TABLE t (v inet)", "unsupported_type", "0A000"},
+		{"unsupported type bit", "CREATE TABLE t (v bit(8))", "unsupported_type", "0A000"},
+		{"unsupported type geometric", "CREATE TABLE t (v point)", "unsupported_type", "0A000"},
+		{"array column int", "CREATE TABLE t (v int[])", "array_column", "0A000"},
+		{"array column text", "CREATE TABLE t (v text[])", "array_column", "0A000"},
 	}
 
 	for _, tc := range cases {
@@ -97,6 +103,9 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 		"CREATE VIEW v AS SELECT 1 AS x",
 		"CREATE SCHEMA s",
 		"DROP TABLE t",
+		"CREATE TABLE t (a smallint, b integer, c bigint, d real, e double precision, f numeric(18,6), g char(5), h varchar(5), i text)",
+		"CREATE TABLE t2 (a date, b time, c timetz, d timestamp, e timestamptz, f interval, g boolean, h bytea, i uuid, j json, k jsonb)",
+		"CREATE TABLE t3 (a int2, b int4, c int8, d float4, e float8, f bool, g bpchar(5), h decimal(10,2))",
 	}
 
 	for _, sql := range sqls {

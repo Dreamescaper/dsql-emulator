@@ -17,6 +17,9 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.ColumnType) > 0 && !intersects(r.ColumnType, columnTypes(node)) {
 		return false
 	}
+	if r.ColumnArray && !hasArrayColumn(node) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -88,6 +91,24 @@ func columnTypes(node *pg_query.Node) []string {
 		}
 	}
 	return out
+}
+
+// hasArrayColumn reports whether any column in a CREATE TABLE is an array.
+func hasArrayColumn(node *pg_query.Node) bool {
+	cs := node.GetCreateStmt()
+	if cs == nil {
+		return false
+	}
+	for _, elt := range cs.GetTableElts() {
+		col := elt.GetColumnDef()
+		if col == nil || col.GetTypeName() == nil {
+			continue
+		}
+		if len(col.GetTypeName().GetArrayBounds()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func objtype(node *pg_query.Node) string {

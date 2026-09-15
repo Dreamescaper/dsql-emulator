@@ -184,9 +184,9 @@ occ:
   inject: []
 ```
 
-Available predicates: `relpersistence`, `column_type`, `objtype`, `txn_kind`,
-`set_name`, `language_not`, `sequence_cache_min`, `identity_cache_min`, and
-`cache_allow`. The `since` field is reserved for version-gating a rule, and
+Available predicates: `relpersistence`, `column_type`, `column_array`,
+`objtype`, `txn_kind`, `set_name`, `language_not`, `sequence_cache_min`,
+`identity_cache_min`, and `cache_allow`. The `since` field is reserved for version-gating a rule, and
 `rewrites` (for `CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule:
 they are supported, so they are simply forwarded, and they appear only as an OCC
 source.
@@ -281,6 +281,8 @@ and the emulator now reproduces all 65 cases except the two deliberate M6 gaps:
 | DML row cap | `54000` "transaction row limit exceeded"; the statement itself fails and the transaction is aborted (`25P02`). Exactly 3000 rows is allowed. |
 | Aborted transaction | Later statements report `25P02`, `ROLLBACK` ends it, and COMMIT reports the `ROLLBACK` command tag. |
 | A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
+| Data types | The documented supported set is accepted, including aliases and precision. Every type absent from it is refused with `0A000` "datatype X not supported", and array columns are refused too. Rule added; the deny-list covers the tested set. |
+| Query-runtime types | Arrays and `inet` work in expressions even though they cannot be columns. |
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |
 

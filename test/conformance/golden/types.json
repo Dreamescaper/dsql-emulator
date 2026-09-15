@@ -1,0 +1,548 @@
+{
+  "recorded_at": "2026-09-15T20:34:24.205116Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "types_supported_columns",
+      "group": "types",
+      "note": "every documented supported type as a column",
+      "steps": [
+        "CREATE TABLE baseline_types_ok (\n\t\t\tc_smallint smallint,\n\t\t\tc_integer integer,\n\t\t\tc_bigint bigint,\n\t\t\tc_real real,\n\t\t\tc_double double precision,\n\t\t\tc_numeric numeric,\n\t\t\tc_numeric_ps numeric(18,6),\n\t\t\tc_decimal decimal(10,2),\n\t\t\tc_char character(10),\n\t\t\tc_varchar character varying(20),\n\t\t\tc_bpchar bpchar(5),\n\t\t\tc_text text,\n\t\t\tc_date date,\n\t\t\tc_time time,\n\t\t\tc_timetz time with time zone,\n\t\t\tc_timestamp timestamp,\n\t\t\tc_timestamptz timestamp with time zone,\n\t\t\tc_interval interval,\n\t\t\tc_boolean boolean,\n\t\t\tc_bytea bytea,\n\t\t\tc_uuid uuid,\n\t\t\tc_json json,\n\t\t\tc_jsonb jsonb)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "types_alias_columns",
+      "group": "types",
+      "note": "documented aliases as column types",
+      "steps": [
+        "CREATE TABLE baseline_types_alias (\n\t\t\tc_int2 int2, c_int4 int4, c_int8 int8,\n\t\t\tc_float4 float4, c_float8 float8,\n\t\t\tc_bool bool, c_varchar varchar(5), c_char char(5),\n\t\t\tc_dec dec, c_timetz timetz, c_timestamptz timestamptz)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "types_roundtrip",
+      "group": "types",
+      "note": "a row through every supported type",
+      "steps": [
+        "INSERT INTO baseline_types_ok\n\t\t\t (c_smallint, c_integer, c_bigint, c_real, c_double, c_numeric, c_numeric_ps,\n\t\t\t  c_decimal, c_char, c_varchar, c_bpchar, c_text, c_date, c_time, c_timetz,\n\t\t\t  c_timestamp, c_timestamptz, c_interval, c_boolean, c_bytea, c_uuid, c_json, c_jsonb)\n\t\t\t VALUES (1, 2, 3, 1.5, 2.5, 3.5, 4.5, 5.5, 'abc', 'def', 'ghi', 'jkl',\n\t\t\t  '2026-01-02', '03:04:05', '03:04:05+00', '2026-01-02 03:04:05',\n\t\t\t  '2026-01-02 03:04:05+00', '1 day', true, '\\x6869',\n\t\t\t  '00000000-0000-0000-0000-000000000001', '{\"a\":1}', '{\"b\":2}')",
+        "SELECT count(*) FROM baseline_types_ok"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "types_runtime_array",
+      "group": "types",
+      "note": "arrays are documented as query-runtime only",
+      "steps": [
+        "SELECT string_to_array('1,2,3', ',')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "string_to_array"
+          ],
+          "rows": [
+            [
+              "[1 2 3]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "types_runtime_inet",
+      "group": "types",
+      "note": "inet is documented as query-runtime only",
+      "steps": [
+        "SELECT '127.0.0.1'::inet"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "inet"
+          ],
+          "rows": [
+            [
+              "127.0.0.1/32"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "types_runtime_json_ops",
+      "group": "types",
+      "steps": [
+        "SELECT '{\"a\":1}'::jsonb -\u003e\u003e 'a'"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_money",
+      "group": "types",
+      "note": "unsupported column type money",
+      "steps": [
+        "CREATE TABLE baseline_type_money (v money)",
+        "DROP TABLE IF EXISTS baseline_type_money"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype money not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_xml",
+      "group": "types",
+      "note": "unsupported column type xml",
+      "steps": [
+        "CREATE TABLE baseline_type_xml (v xml)",
+        "DROP TABLE IF EXISTS baseline_type_xml"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype xml not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_inet",
+      "group": "types",
+      "note": "unsupported column type inet",
+      "steps": [
+        "CREATE TABLE baseline_type_inet (v inet)",
+        "DROP TABLE IF EXISTS baseline_type_inet"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype inet not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_cidr",
+      "group": "types",
+      "note": "unsupported column type cidr",
+      "steps": [
+        "CREATE TABLE baseline_type_cidr (v cidr)",
+        "DROP TABLE IF EXISTS baseline_type_cidr"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype cidr not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_macaddr",
+      "group": "types",
+      "note": "unsupported column type macaddr",
+      "steps": [
+        "CREATE TABLE baseline_type_macaddr (v macaddr)",
+        "DROP TABLE IF EXISTS baseline_type_macaddr"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype macaddr not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_point",
+      "group": "types",
+      "note": "unsupported column type point",
+      "steps": [
+        "CREATE TABLE baseline_type_point (v point)",
+        "DROP TABLE IF EXISTS baseline_type_point"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype point not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_line",
+      "group": "types",
+      "note": "unsupported column type line",
+      "steps": [
+        "CREATE TABLE baseline_type_line (v line)",
+        "DROP TABLE IF EXISTS baseline_type_line"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype line not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_lseg",
+      "group": "types",
+      "note": "unsupported column type lseg",
+      "steps": [
+        "CREATE TABLE baseline_type_lseg (v lseg)",
+        "DROP TABLE IF EXISTS baseline_type_lseg"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype lseg not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_box",
+      "group": "types",
+      "note": "unsupported column type box",
+      "steps": [
+        "CREATE TABLE baseline_type_box (v box)",
+        "DROP TABLE IF EXISTS baseline_type_box"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype box not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_path",
+      "group": "types",
+      "note": "unsupported column type path",
+      "steps": [
+        "CREATE TABLE baseline_type_path (v path)",
+        "DROP TABLE IF EXISTS baseline_type_path"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype path not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_polygon",
+      "group": "types",
+      "note": "unsupported column type polygon",
+      "steps": [
+        "CREATE TABLE baseline_type_polygon (v polygon)",
+        "DROP TABLE IF EXISTS baseline_type_polygon"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype polygon not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_circle",
+      "group": "types",
+      "note": "unsupported column type circle",
+      "steps": [
+        "CREATE TABLE baseline_type_circle (v circle)",
+        "DROP TABLE IF EXISTS baseline_type_circle"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype circle not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_tsvector",
+      "group": "types",
+      "note": "unsupported column type tsvector",
+      "steps": [
+        "CREATE TABLE baseline_type_tsvector (v tsvector)",
+        "DROP TABLE IF EXISTS baseline_type_tsvector"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype tsvector not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_tsquery",
+      "group": "types",
+      "note": "unsupported column type tsquery",
+      "steps": [
+        "CREATE TABLE baseline_type_tsquery (v tsquery)",
+        "DROP TABLE IF EXISTS baseline_type_tsquery"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype tsquery not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_int4range",
+      "group": "types",
+      "note": "unsupported column type int4range",
+      "steps": [
+        "CREATE TABLE baseline_type_int4range (v int4range)",
+        "DROP TABLE IF EXISTS baseline_type_int4range"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype int4range not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_tsrange",
+      "group": "types",
+      "note": "unsupported column type tsrange",
+      "steps": [
+        "CREATE TABLE baseline_type_tsrange (v tsrange)",
+        "DROP TABLE IF EXISTS baseline_type_tsrange"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype tsrange not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_bit_8",
+      "group": "types",
+      "note": "unsupported column type bit(8)",
+      "steps": [
+        "CREATE TABLE baseline_type_bit_8 (v bit(8))",
+        "DROP TABLE IF EXISTS baseline_type_bit_8"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype bit not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_varbit_8",
+      "group": "types",
+      "note": "unsupported column type varbit(8)",
+      "steps": [
+        "CREATE TABLE baseline_type_varbit_8 (v varbit(8))",
+        "DROP TABLE IF EXISTS baseline_type_varbit_8"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype bit varying not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_pg_lsn",
+      "group": "types",
+      "note": "unsupported column type pg_lsn",
+      "steps": [
+        "CREATE TABLE baseline_type_pg_lsn (v pg_lsn)",
+        "DROP TABLE IF EXISTS baseline_type_pg_lsn"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype pg_lsn not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_int",
+      "group": "types",
+      "note": "unsupported column type int[]",
+      "steps": [
+        "CREATE TABLE baseline_type_int (v int[])",
+        "DROP TABLE IF EXISTS baseline_type_int"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype integer[] not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    },
+    {
+      "name": "type_unsupported_text",
+      "group": "types",
+      "note": "unsupported column type text[]",
+      "steps": [
+        "CREATE TABLE baseline_type_text (v text[])",
+        "DROP TABLE IF EXISTS baseline_type_text"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype text[] not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    }
+  ]
+}

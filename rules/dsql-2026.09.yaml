@@ -49,6 +49,24 @@ unsupported:
     code: "0A000"
     message: "identity column is not supported without an explicit cache size; define CACHE greater than or equal to 65536 or equal to 1"
 
+  # Data types are an allow-list in the documentation: anything absent from the
+  # supported-types page is unsupported. This deny-list covers the tested set.
+  - id: unsupported_type
+    stmt: create_stmt
+    column_type:
+      ["money", "xml", "inet", "cidr", "macaddr", "macaddr8", "point", "line",
+       "lseg", "box", "path", "polygon", "circle", "tsvector", "tsquery",
+       "int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange",
+       "bit", "varbit", "pg_lsn"]
+    code: "0A000"
+    message: "datatype not supported"
+
+  - id: array_column
+    stmt: create_stmt
+    column_array: true
+    code: "0A000"
+    message: "array columns are not supported"
+
   - id: materialized_view
     stmt: create_table_as_stmt
     objtype: ["OBJECT_MATVIEW"]

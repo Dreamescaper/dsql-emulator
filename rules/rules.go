@@ -41,6 +41,8 @@ type Rule struct {
 	TxnKind        []string `yaml:"txn_kind"`
 	// SetName matches the parameter named by SET, for example TRANSACTION.
 	SetName []string `yaml:"set_name"`
+	// ColumnArray matches a table that declares an array column.
+	ColumnArray bool `yaml:"column_array"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`
