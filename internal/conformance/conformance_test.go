@@ -172,6 +172,29 @@ func TestLoadDirRejectsDuplicateCaseNames(t *testing.T) {
 	}
 }
 
+func TestUnrecorded(t *testing.T) {
+	golden := &conformance.Golden{Cases: []conformance.RecordedCase{caseInGroup("a", "g")}}
+	emulated := &conformance.Golden{Cases: []conformance.RecordedCase{
+		caseInGroup("a", "g"),
+		caseInGroup("c", "g"),
+		caseInGroup("b", "g"),
+	}}
+
+	got := conformance.Unrecorded(golden, emulated)
+	if len(got) != 2 || got[0] != "b" || got[1] != "c" {
+		t.Fatalf("got %v want [b c]", got)
+	}
+}
+
+func TestUnrecordedEmptyWhenFullyCovered(t *testing.T) {
+	golden := &conformance.Golden{Cases: []conformance.RecordedCase{caseInGroup("a", "g")}}
+	emulated := &conformance.Golden{Cases: []conformance.RecordedCase{caseInGroup("a", "g")}}
+
+	if got := conformance.Unrecorded(golden, emulated); len(got) != 0 {
+		t.Fatalf("got %v want none", got)
+	}
+}
+
 func TestLoadDirMissingDirectory(t *testing.T) {
 	if _, err := conformance.LoadDir(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("expected an error for a directory with no fixtures")

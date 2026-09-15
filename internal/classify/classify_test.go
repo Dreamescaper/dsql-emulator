@@ -55,6 +55,8 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"set transaction", "SET TRANSACTION READ ONLY", "set_transaction", "0A000"},
 		{"savepoint", "SAVEPOINT sp", "savepoint", "0A000"},
 		{"release savepoint", "RELEASE SAVEPOINT sp", "release_savepoint", "0A000"},
+		{"rollback to savepoint", "ROLLBACK TO SAVEPOINT sp", "rollback_to_savepoint", "0A000"},
+		{"set default isolation", "SET default_transaction_isolation = 'repeatable read'", "set_isolation", "0A000"},
 		{"synchronous index", "CREATE INDEX idx ON t (a)", "sync_index", "0A000"},
 		{"plpgsql function", "CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$", "create_function_language", "0A000"},
 	}
@@ -199,7 +201,6 @@ func TestClassifyAllowsRepeatableReadIsolation(t *testing.T) {
 
 	sqls := []string{
 		"BEGIN ISOLATION LEVEL REPEATABLE READ",
-		"SET default_transaction_isolation = 'repeatable read'",
 	}
 
 	for _, sql := range sqls {

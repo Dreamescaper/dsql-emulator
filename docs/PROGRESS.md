@@ -6,10 +6,9 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**M7 complete.** The baseline was recorded against a real cluster and the
-ruleset reconciled: the emulator now reproduces all 53 probes exactly, with only
-four deliberate, documented divergences (the M3 aborted-transaction behavior and
-the M6 index/`sys.jobs` work).
+**M7 complete, M3 complete.** The record holds 65 probes; the emulator matches
+all of them except the two M6 gaps (`CREATE INDEX ASYNC`, `sys.jobs`). Refusals
+inside a transaction fail it exactly as Aurora DSQL does.
 
 Last updated: 2026-09-15.
 
@@ -34,6 +33,78 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### M7 (part 3) — re-record with the M3 and backlog probes (2026-09-15)
+
+Recorded the twelve probes added since the first baseline, bringing the record
+to 65 cases. The cluster was left clean (`--cleanup-only` reports no `baseline_`
+objects).
+
+The re-record confirmed the M3 predictions and found two more rules to add:
+
+- `ROLLBACK TO SAVEPOINT` is refused with `0A000`; the emulator was letting
+  PostgreSQL answer `25P01`. Rule `rollback_to_savepoint` added.
+- `SET default_transaction_isolation` is refused with `0A000`; the emulator
+  allowed it. Rule `set_isolation` added.
+- Confirmed the M3 contract: `rejection_aborts_txn`, `aborted_txn_prefers_25P02`,
+  `aborted_txn_recovers_after_rollback`, `rejection_outside_txn_does_not_abort`,
+  `row_cap_boundary` (exactly 3000 rows is allowed), and `row_cap_discards_rows`
+  all matched on the first comparison.
+- Confirmed `LANGUAGE plpgsql` is refused, and cached identity and sequence
+  `CACHE 1` are accepted.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `65 cases match the golden record` with only the two M6 gaps.
+
+Also added `conformance.Unrecorded`, and the conformance test now lists cases
+the emulator runs that the record does not cover, so a new probe cannot go
+unnoticed.
+
+### M3 — transaction coordinator (2026-09-15)
+
+Delivered:
+
+- `internal/proxy/session.go` — failed-transaction state and abort
+  orchestration. A refusal inside an explicit transaction now fails the
+  transaction; later statements are refused with `25P02`; COMMIT and ROLLBACK
+  end it. The row cap is enforced where DSQL enforces it: at the statement that
+  crosses it, with the statement's success withheld.
+- The upstream transaction is failed by sending a deliberately failing
+  statement (`SELECT 1/0`). PostgreSQL then answers COMMIT with the `ROLLBACK`
+  command tag and refuses later statements, so the coordinator needs no response
+  rewriting — the real server produces the exact behavior.
+- Upstream writes are serialized (`upstreamMu`) now that both pumps can inject
+  messages, and session state shared between the two pumps is mutex-guarded.
+- `internal/txn/` — the row-limit message is now DSQL's wording,
+  "transaction row limit exceeded".
+
+Verification:
+
+```
+gofmt -l .                                     # no output
+go build ./... && go vet ./... && go vet -tags integration ./...   # ok
+go test -race ./...                            # ok: all internal packages
+go test -tags integration -count=1 ./test/...  # ok
+```
+
+Conformance now reports `53 cases match the golden record` with only the two
+known M6 gaps. Both previously failing cases closed:
+
+- `row_cap` — `BEGIN | 54000 | 25P02`.
+- `read_only` — `BEGIN | 0A000 | 25P02 | ROLLBACK`.
+
+New tests: `TestSessionFailsTransactionWhenRowLimitCrossed`,
+`TestSessionCommitOnFailedTransactionRollsBack`, and the integration subtests
+`enforces_the_row_cap_and_permits_rollback` (now also asserts the rollback left
+zero rows) and `rejection_aborts_the_transaction`.
+
+Deliberate limitation:
+
+- An implicit (single-statement) transaction that crosses the row cap is still
+  not prevented: the statement commits before its row count is known.
+  Preventing it needs implicit transactions to be wrapped in an explicit
+  upstream transaction. Recorded in PLAN.md.
 
 ### M7 (part 2b) — golden fixtures split by group (2026-09-15)
 
@@ -382,31 +453,25 @@ with zero protocol assumptions.
 | 2026-09-15 | Rules are reconciled to the baseline, not to documentation | Real DSQL diverged from the docs: `CREATE DOMAIN` and `LANGUAGE sql` functions are supported, `SET TRANSACTION` is refused outright, and `serial` fails as `42704`. Recorded behavior wins. |
 | 2026-09-15 | `row_cap` and `read_only` are `KnownGap`s on M3 | DSQL fails the offending statement and aborts the transaction; reproducing that needs the rollback and aborted-state work already planned for M3, so a workaround would be thrown away. |
 | 2026-09-15 | DSQL has two token commands | `generate-db-connect-auth-token` yields a `DbConnect` token that cannot connect as `admin`; `generate-db-connect-admin-auth-token` yields the `DbConnectAdmin` token that can. A non-admin token fails as `08006 access denied`. |
+| 2026-09-15 | Fail a transaction by sending a deliberately failing statement | PostgreSQL's own aborted-transaction state then produces the `ROLLBACK` tag on COMMIT and `25P02` for later statements. Synthesizing these responses instead would mean reimplementing PostgreSQL's state machine and rewriting response frames. |
+| 2026-09-15 | Withhold the CommandComplete of the statement that crosses the row cap | Aurora DSQL fails that statement, not the next one, so its success cannot be forwarded. This is the one place the coordinator suppresses an upstream message rather than injecting one. |
+| 2026-09-15 | Forward COMMIT on a failed transaction | The upstream transaction is already aborted, so PostgreSQL answers with the `ROLLBACK` tag DSQL reports. Rewriting a cached prepared COMMIT would not be possible, since only its name is known at Bind. |
 
 ## Next up
 
-### M7 (part 3) — re-record as the suite grows
+### M4 — auth, TLS, and version emulation
 
-- Run `make baseline` again to record the newly added backlog probes (non-`sql`
-  functions, cached identity and sequence, `ROLLBACK TO SAVEPOINT`,
-  `SET default_transaction_isolation`, `SET TRANSACTION ISOLATION LEVEL
-  REPEATABLE READ`).
-- Add concurrent-session probes to pin OCC behavior (`OC000`, `40001`).
+- Terminate TLS so interception survives `sslmode=require`, instead of falling
+  back to a raw relay.
+- Accept an IAM-style token as the password.
+- Report a DSQL-like `server_version`, single database, UTC, and C collation.
 
-### M3 — transaction coordinator
+### Remaining fidelity gaps
 
-- Roll the backend transaction back when a limit is breached, instead of relying
-  on the client to ROLLBACK.
-- Model the aborted-transaction state: after any rejection inside an explicit
-  transaction, refuse later statements with `25P02` until ROLLBACK, and answer
-  COMMIT with a `ROLLBACK` command tag.
-- Wrap implicit transactions in an explicit backend transaction so a row-cap
-  breach is prevented rather than merely reported.
-- Widen the startup rewrite into the place where TLS termination and IAM-token
-  auth will land (M4).
+- Wrap implicit transactions in an explicit upstream transaction so a
+  single-statement row-cap breach is prevented (M3 remainder).
+- M6: `CREATE INDEX ASYNC` rewriting and `sys.jobs`.
+- M5: add concurrent-session probes to pin OCC behavior (`OC000`, `40001`).
+  The suite currently uses a single connection, so it needs multi-session
+  support first.
 
-### Carried forward
-
-- Nothing outstanding: the ruleset verification backlog was answered by the
-  baseline (see PLAN.md), except for OCC behavior and the probes added for the
-  next recording.

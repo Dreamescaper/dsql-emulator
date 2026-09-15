@@ -85,6 +85,10 @@ func TestConformanceAgainstEmulator(t *testing.T) {
 			t.Logf("known gap %s", d)
 		}
 
+		if unrecorded := conformance.Unrecorded(golden, emulated); len(unrecorded) > 0 {
+			t.Logf("%d case(s) not covered by the golden record; re-run `make baseline`: %v", len(unrecorded), unrecorded)
+		}
+
 		failures := conformance.Failures(diffs)
 		if len(failures) == 0 {
 			t.Logf("%d cases match the golden record", len(golden.Cases))

@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "recorded_at": "2026-09-15T20:29:41.079586Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -72,6 +72,93 @@
         {
           "outcome": "ok",
           "command_tag": "CREATE SCHEMA"
+        }
+      ]
+    },
+    {
+      "name": "create_function_plpgsql",
+      "group": "backlog",
+      "note": "confirm non-sql function languages are refused",
+      "steps": [
+        "CREATE FUNCTION baseline_plpgsql() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE FUNCTION with language plpgsql not supported"
+        }
+      ]
+    },
+    {
+      "name": "identity_column_cached",
+      "group": "backlog",
+      "note": "confirm identity with a large CACHE is allowed",
+      "steps": [
+        "CREATE TABLE baseline_identity_cached (id bigint GENERATED ALWAYS AS IDENTITY (CACHE 65536) PRIMARY KEY, value text)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "create_sequence_cache_one",
+      "group": "backlog",
+      "note": "confirm CACHE 1 is allowed",
+      "steps": [
+        "CREATE SEQUENCE baseline_seq_one CACHE 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE SEQUENCE"
+        }
+      ]
+    },
+    {
+      "name": "rollback_to_savepoint",
+      "group": "backlog",
+      "steps": [
+        "ROLLBACK TO SAVEPOINT baseline_sp"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported transaction statement: ROLLBACK TO"
+        }
+      ]
+    },
+    {
+      "name": "set_transaction_repeatable_read",
+      "group": "backlog",
+      "note": "confirm SET TRANSACTION is refused even for the supported level",
+      "steps": [
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"TRANSACTION\" not supported"
+        }
+      ]
+    },
+    {
+      "name": "set_default_isolation",
+      "group": "backlog",
+      "note": "confirm SET default_transaction_isolation is refused",
+      "steps": [
+        "SET default_transaction_isolation = 'repeatable read'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"default_transaction_isolation\" not supported"
         }
       ]
     }

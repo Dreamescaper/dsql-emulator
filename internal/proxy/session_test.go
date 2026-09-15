@@ -272,15 +272,74 @@ func (ts *testSession) expectBackendQuery(t *testing.T) string {
 	return q.String
 }
 
+// expectRejectedInTxn asserts a statement is refused inside a transaction, and
+// then plays the upstream side of the abort the session injects.
+func (ts *testSession) expectRejectedInTxn(t *testing.T, sql, code string) {
+	t.Helper()
+
+	ts.send(t, &pgproto3.Query{String: sql})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatalf("%q: expected ErrorResponse", sql)
+	}
+	if er.Code != code {
+		t.Fatalf("%q: got SQLSTATE %q want %q (%s)", sql, er.Code, code, er.Message)
+	}
+	ts.expectAbort(t)
+}
+
+// expectAbort reads the deliberate failing statement the session sends to fail
+// the upstream transaction, answers it, and checks the client sees a
+// failed-transaction ReadyForQuery.
+func (ts *testSession) expectAbort(t *testing.T) {
+	t.Helper()
+
+	msg := ts.receiveBackend(t)
+	q, ok := msg.(*pgproto3.Query)
+	if !ok || q.String != "SELECT 1/0" {
+		t.Fatalf("expected the abort statement at the backend, got %T", msg)
+	}
+	ts.sendBackend(t, &pgproto3.ErrorResponse{Severity: "ERROR", Code: "25P02", Message: "aborted"})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'E'})
+
+	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
+	if !ok {
+		t.Fatal("expected ReadyForQuery to complete the rejected statement")
+	}
+	if rfq.TxStatus != 'E' {
+		t.Fatalf("got tx status %q want E", rfq.TxStatus)
+	}
+}
+
+// expectFailedQuery asserts the client is told the transaction is already
+// failed.
+func (ts *testSession) expectFailedQuery(t *testing.T, sql string) {
+	t.Helper()
+
+	ts.send(t, &pgproto3.Query{String: sql})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatalf("%q: expected ErrorResponse", sql)
+	}
+	if er.Code != "25P02" {
+		t.Fatalf("%q: got SQLSTATE %q want 25P02", sql, er.Code)
+	}
+	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
+	if !ok {
+		t.Fatalf("%q: expected ReadyForQuery", sql)
+	}
+	if rfq.TxStatus != 'E' {
+		t.Fatalf("%q: got tx status %q want E", sql, rfq.TxStatus)
+	}
+}
+
 func TestSessionEnforcesOneDDLPerTransaction(t *testing.T) {
 	ts := newTestSession(t)
 
 	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
 	ts.roundTrip(t, "CREATE TABLE a (id int)", "CREATE TABLE", 'T')
 
-	if status := ts.expectRejectedQuery(t, "CREATE TABLE b (id int)", "0A000"); status != 'T' {
-		t.Fatalf("got tx status %q want T", status)
-	}
+	ts.expectRejectedInTxn(t, "CREATE TABLE b (id int)", "0A000")
 }
 
 func TestSessionEnforcesDDLandDMLSeparation(t *testing.T) {
@@ -288,14 +347,14 @@ func TestSessionEnforcesDDLandDMLSeparation(t *testing.T) {
 		ts := newTestSession(t)
 		ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
 		ts.roundTrip(t, "CREATE TABLE a (id int)", "CREATE TABLE", 'T')
-		ts.expectRejectedQuery(t, "INSERT INTO a VALUES (1)", "0A000")
+		ts.expectRejectedInTxn(t, "INSERT INTO a VALUES (1)", "0A000")
 	})
 
 	t.Run("dml then ddl", func(t *testing.T) {
 		ts := newTestSession(t)
 		ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
 		ts.roundTrip(t, "INSERT INTO a VALUES (1)", "INSERT 0 1", 'T')
-		ts.expectRejectedQuery(t, "CREATE TABLE b (id int)", "0A000")
+		ts.expectRejectedInTxn(t, "CREATE TABLE b (id int)", "0A000")
 	})
 }
 
@@ -309,21 +368,88 @@ func TestSessionAllowsDDLInSeparateTransactions(t *testing.T) {
 func TestSessionRejectsDDLAndDMLInOneImplicitTransaction(t *testing.T) {
 	ts := newTestSession(t)
 
+	// No explicit transaction, so a refusal does not fail a transaction.
 	ts.expectRejectedQuery(t, "CREATE TABLE a (id int); INSERT INTO a VALUES (1)", "0A000")
 }
 
-func TestSessionEnforcesRowCapAndAllowsRollback(t *testing.T) {
+func TestSessionFailsTransactionWhenRowLimitCrossed(t *testing.T) {
 	ts := newTestSession(t)
 
 	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
-	ts.roundTrip(t, "DELETE FROM big", "DELETE 5000", 'T')
 
-	if status := ts.expectRejectedQuery(t, "SELECT 1", "54000"); status != 'T' {
-		t.Fatalf("got tx status %q want T", status)
+	ts.send(t, &pgproto3.Query{String: "DELETE FROM big"})
+	if got := ts.expectBackendQuery(t); got != "DELETE FROM big" {
+		t.Fatalf("backend received %q", got)
 	}
 
-	// The client must still be able to escape the transaction.
-	ts.roundTrip(t, "ROLLBACK", "ROLLBACK", 'I')
+	// The statement succeeds upstream, but its result must be withheld.
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("DELETE 5000")})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected the row limit error")
+	}
+	if er.Code != "54000" {
+		t.Fatalf("got SQLSTATE %q want 54000", er.Code)
+	}
+
+	// Expect the injected abort: the statement's own ReadyForQuery, then the
+	// failing statement's error and ReadyForQuery.
+	msg := ts.receiveBackend(t)
+	q, ok := msg.(*pgproto3.Query)
+	if !ok || q.String != "SELECT 1/0" {
+		t.Fatalf("expected the abort statement at the backend, got %T", msg)
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+	ts.sendBackend(t, &pgproto3.ErrorResponse{Severity: "ERROR", Code: "25P02", Message: "aborted"})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'E'})
+
+	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
+	if !ok || rfq.TxStatus != 'E' {
+		t.Fatalf("expected a failed-transaction ReadyForQuery, got %T", rfq)
+	}
+
+	// The transaction is now failed until the client ends it.
+	ts.expectFailedQuery(t, "SELECT 1")
+
+	ts.send(t, &pgproto3.Query{String: "ROLLBACK"})
+	if got := ts.expectBackendQuery(t); got != "ROLLBACK" {
+		t.Fatalf("backend received %q", got)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected CommandComplete at the client")
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery at the client")
+	}
+}
+
+func TestSessionCommitOnFailedTransactionRollsBack(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.expectRejectedInTxn(t, "SET TRANSACTION READ ONLY", "0A000")
+	ts.expectFailedQuery(t, "SELECT 1")
+
+	// The upstream transaction is already failed, so forwarding COMMIT makes
+	// PostgreSQL report a ROLLBACK, which is what DSQL does too.
+	ts.send(t, &pgproto3.Query{String: "COMMIT"})
+	if got := ts.expectBackendQuery(t); got != "COMMIT" {
+		t.Fatalf("backend received %q", got)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
+	cc, ok := ts.receive(t).(*pgproto3.CommandComplete)
+	if !ok || string(cc.CommandTag) != "ROLLBACK" {
+		t.Fatalf("got %v want ROLLBACK command tag", cc)
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery at the client")
+	}
+
+	// The transaction is over; the session is usable again.
+	ts.roundTrip(t, "SELECT 1", "SELECT 1", 'I')
 }
 
 func TestSessionRejectsUnsupportedIsolation(t *testing.T) {

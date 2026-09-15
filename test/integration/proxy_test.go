@@ -224,15 +224,40 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if _, err := conn.Exec(ctx, "insert into txn_bulk select generate_series(1, 3001)"); err != nil {
-			t.Fatalf("bulk insert: %v", err)
-		}
 
-		_, err := conn.Exec(ctx, "select 1")
+		// The statement that crosses the cap fails, and the transaction is left
+		// aborted until the client ends it.
+		_, err := conn.Exec(ctx, "insert into txn_bulk select generate_series(1, 3001)")
 		assertSQLState(t, err, "54000")
+
+		_, err = conn.Exec(ctx, "select 1")
+		assertSQLState(t, err, "25P02")
 
 		if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
 			t.Fatalf("rollback: %v", err)
+		}
+
+		var count int
+		if err := conn.QueryRow(ctx, "select count(*) from txn_bulk").Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("rollback left %d rows behind", count)
+		}
+	})
+
+	t.Run("rejection aborts the transaction", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		_, err := conn.Exec(ctx, "TRUNCATE txn_bulk")
+		assertSQLState(t, err, "0A000")
+
+		_, err = conn.Exec(ctx, "select 1")
+		assertSQLState(t, err, "25P02")
+
+		if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+			t.Fatalf("commit on an aborted transaction should succeed: %v", err)
 		}
 	})
 }

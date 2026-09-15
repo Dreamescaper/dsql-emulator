@@ -3,6 +3,7 @@ package conformance
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // Difference is one field where the emulator disagreed with the golden record.
@@ -117,6 +118,24 @@ func CompareSuites(golden, emulated *Golden) []Difference {
 		diffs = append(diffs, Compare(want, got)...)
 	}
 	return diffs
+}
+
+// Unrecorded lists cases the emulator ran that the golden record does not
+// cover, so probes added since the last baseline are not silently unverified.
+func Unrecorded(golden, emulated *Golden) []string {
+	recorded := make(map[string]bool, len(golden.Cases))
+	for _, c := range golden.Cases {
+		recorded[c.Name] = true
+	}
+
+	var names []string
+	for _, c := range emulated.Cases {
+		if !recorded[c.Name] {
+			names = append(names, c.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Failures filters out advisory differences and cases marked as known gaps.

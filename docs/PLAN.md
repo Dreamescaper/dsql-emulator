@@ -117,20 +117,23 @@ transaction is its own implicit transaction.
 - Exactly one DDL per transaction.
 - DDL and DML must be in separate transactions.
 - DML row cap per transaction (3000) — rows are summed from `CommandComplete`
-  tags. The batch that crosses the cap has already run, so the *next* batch that
-  is not a ROLLBACK is refused with `54000`.
-- Transaction age limit (30 minutes) → `54000` on the next batch.
-- A ROLLBACK is always admitted, so a client can escape a transaction that has
-  already breached a limit.
+  tags. The statement that crosses the cap fails with `54000`, and its success
+  is withheld from the client.
+- Transaction age limit (30 minutes) → `54000`.
 
-Known gaps, tracked as the transaction-coordinator milestone:
+Failed transactions:
 
-- The backend transaction is not rolled back when a limit is breached; the
-  client is expected to ROLLBACK, and no statement is allowed to commit
-  meanwhile. There is no `25P02` aborted-transaction state.
-- A row cap exceeded by an implicit (single-statement) transaction is reported
-  but not prevented, because the backend has already committed it. Preventing it
-  needs implicit transactions to be wrapped in an explicit backend transaction.
+- Any refusal inside an explicit transaction fails it, as on a real server.
+  Later statements are refused with `25P02` until the client ends it.
+- The upstream transaction is failed by sending a deliberately failing
+  statement. PostgreSQL then answers COMMIT with the `ROLLBACK` command tag and
+  refuses later statements by itself, so no response rewriting is needed.
+- ROLLBACK always ends a failed transaction, and a client can always escape.
+
+Remaining gap: an implicit (single-statement) transaction that crosses the row
+cap is still not prevented, because the statement commits before its row count
+is known. Preventing it needs implicit transactions to be wrapped in an explicit
+upstream transaction.
 
 ## Ruleset
 
@@ -207,9 +210,11 @@ rather than assumed.
 The comparison enforces outcome, SQLSTATE, command tag, and rows. Error
 *messages* are reported but advisory, because server wording drifts. A case may
 set `IgnoreRows` (generated ids, `version()`) or `KnownGap` (an accepted
-divergence); known gaps are reported and not enforced. The emulator's copy of a
-case supplies step text and suite metadata, so editing the suite takes effect
-without re-recording.
+divergence); known gaps are reported and not enforced. Cases the emulator runs
+that the record does not cover are listed as unrecorded, so a probe added since
+the last baseline is never silently unverified. The emulator's copy of a case
+supplies step text and suite metadata, so editing the suite takes effect without
+re-recording.
 
 Safety, because the target is someone's cluster:
 
@@ -230,8 +235,8 @@ fixture to keep forever.
 | M0 | Wire proxy passthrough, 1:1 pinning, pgx round-trip test | done |
 | M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | done |
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
-| M3 | Transaction coordinator: backend rollback, aborted-transaction state, implicit-transaction wrapping | next |
-| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | planned |
+| M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
+| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | next |
 | M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
 | M7 | Conformance harness: golden record + emulator diff | done |
@@ -255,34 +260,36 @@ test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
 
 ## Verification backlog
 
-Answered by the first baseline run (`test/conformance/golden/`,
-recorded against a real cluster on 2026-09-15). The ruleset was reconciled to
-match, and the emulator now reproduces all 53 cases except the deliberate gaps:
+Answered by baseline runs on 2026-09-15. The ruleset was reconciled to match,
+and the emulator now reproduces all 65 cases except the two deliberate M6 gaps:
 
 | Question | Answer |
 |----------|--------|
 | Savepoints | Rejected, `0A000`. Rule added. |
 | `CREATE VIEW` | Supported. No rule. |
 | `CREATE FUNCTION ... LANGUAGE sql` | Supported. Rule narrowed to non-`sql` languages. |
+| `CREATE FUNCTION ... LANGUAGE plpgsql` | Rejected, `0A000`. Confirmed. |
 | `CREATE TABLE AS` / materialized view | Rejected, `0A000`. |
-| `CREATE SEQUENCE` | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added. |
+| `CREATE SEQUENCE` | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added; `CACHE 1` confirmed allowed. |
 | Synchronous `CREATE INDEX` | Rejected, `0A000`; ASYNC required. Rule added. |
 | `serial` column | Rejected as `42704` "type does not exist", not `0A000`. |
-| Identity column | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added. |
+| Identity column | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added; cached identity confirmed allowed. |
 | `CREATE DOMAIN` | Supported. Rule removed. |
 | `SET TRANSACTION` | Refused entirely, `0A000`. Rule added. |
-| DML row cap | `54000` "transaction row limit exceeded"; the statement itself fails and the transaction is aborted (`25P02`). |
+| `SET default_transaction_isolation` | Refused, `0A000`. Rule added. |
+| `ROLLBACK TO SAVEPOINT` | Rejected, `0A000`. Rule added. |
+| DML row cap | `54000` "transaction row limit exceeded"; the statement itself fails and the transaction is aborted (`25P02`). Exactly 3000 rows is allowed. |
+| Aborted transaction | Later statements report `25P02`, `ROLLBACK` ends it, and COMMIT reports the `ROLLBACK` command tag. |
+| A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |
 
-Still open, with probe cases added to the suite for the next recording:
+Still open:
 
-- Function languages other than `sql` (the rule assumes they are refused).
-- Identity and sequence `CACHE 65536` / `CACHE 1` acceptance.
-- `ROLLBACK TO SAVEPOINT`, `SET default_transaction_isolation`.
-- OCC behavior: not covered by this suite, which uses one connection. Needs
-  concurrent sessions to pin `OC000` codes and commit-time conflict outcomes.
-- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`.
+- OCC behavior: the suite uses one connection, so `OC000` codes and
+  commit-time conflict outcomes are unverified. Needs concurrent-session
+  probes (M5).
+- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL` (M5).
 
 ## Prior art
 

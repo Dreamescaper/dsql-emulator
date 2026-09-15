@@ -124,6 +124,12 @@ unsupported:
     code: "0A000"
     message: 'setting configuration parameter "TRANSACTION" not supported'
 
+  - id: set_isolation
+    stmt: variable_set_stmt
+    set_name: ["transaction_isolation", "default_transaction_isolation"]
+    code: "0A000"
+    message: 'setting configuration parameter "default_transaction_isolation" not supported'
+
   - id: sync_index
     stmt: index_stmt
     code: "0A000"
@@ -140,6 +146,12 @@ unsupported:
     txn_kind: ["TRANS_STMT_RELEASE"]
     code: "0A000"
     message: "unsupported transaction statement: RELEASE"
+
+  - id: rollback_to_savepoint
+    stmt: transaction_stmt
+    txn_kind: ["TRANS_STMT_ROLLBACK_TO"]
+    code: "0A000"
+    message: "unsupported transaction statement: ROLLBACK TO"
 
   - id: create_function_language
     stmt: create_function_stmt

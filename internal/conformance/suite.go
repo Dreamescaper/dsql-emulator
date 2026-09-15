@@ -115,10 +115,20 @@ func DefaultSuite() Suite {
 			// Transaction rules.
 			{Name: "two_ddl_one_txn", Group: "transaction", Steps: []string{"BEGIN", "CREATE TABLE baseline_txn_a (id int)", "CREATE TABLE baseline_txn_b (id int)"}},
 			{Name: "ddl_then_dml", Group: "transaction", Steps: []string{"BEGIN", "CREATE TABLE baseline_txn_c (id int)", "INSERT INTO baseline_txn_c (id) VALUES (1)"}},
-			{Name: "row_cap", Group: "transaction", Note: "DSQL fails the statement that crosses the cap and aborts the transaction", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)", "SELECT 1"}, KnownGap: "M3: the emulator cannot refuse a statement it has already sent, and does not model the aborted-transaction state"},
+			{Name: "row_cap", Group: "transaction", Note: "DSQL fails the statement that crosses the cap and aborts the transaction", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)", "SELECT 1"}},
 			{Name: "commit", Group: "transaction", Steps: []string{"BEGIN", "INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000bb', 'tx')", "COMMIT"}},
 			{Name: "rollback", Group: "transaction", Steps: []string{"BEGIN", "INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000cc', 'tx')", "ROLLBACK", "SELECT count(*) FROM baseline_parent WHERE name = 'tx'"}},
-			{Name: "read_only", Group: "transaction", Note: "DSQL refuses SET TRANSACTION and then the transaction is aborted", Steps: []string{"BEGIN", "SET TRANSACTION READ ONLY", "SELECT 1", "COMMIT"}, KnownGap: "M3: the SET is now refused, but the aborted-transaction state is not modelled"},
+			{Name: "read_only", Group: "transaction", Note: "DSQL refuses SET TRANSACTION and then the transaction is aborted", Steps: []string{"BEGIN", "SET TRANSACTION READ ONLY", "SELECT 1", "COMMIT"}},
+
+			// Aborted-transaction behavior: a refusal fails the whole
+			// transaction, later statements report 25P02, and only ROLLBACK (or
+			// a COMMIT that reports ROLLBACK) ends it.
+			{Name: "rejection_aborts_txn", Group: "transaction", Note: "a dialect refusal fails the transaction", Steps: []string{"BEGIN", "TRUNCATE baseline_parent", "SELECT 1", "ROLLBACK"}},
+			{Name: "aborted_txn_prefers_25P02", Group: "transaction", Note: "in a failed transaction an unsupported statement reports 25P02 first", Steps: []string{"BEGIN", "TRUNCATE baseline_parent", "TRUNCATE baseline_parent", "ROLLBACK"}},
+			{Name: "aborted_txn_recovers_after_rollback", Group: "transaction", Note: "ROLLBACK ends a failed transaction and the session is usable", Steps: []string{"BEGIN", "SET TRANSACTION READ ONLY", "ROLLBACK", "SELECT 1"}},
+			{Name: "rejection_outside_txn_does_not_abort", Group: "transaction", Note: "an implicit transaction is not failed by a refusal", Steps: []string{"TRUNCATE baseline_parent", "SELECT 1"}},
+			{Name: "row_cap_boundary", Group: "transaction", Note: "confirm exactly 3000 rows is allowed", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3000)", "SELECT 1", "ROLLBACK"}},
+			{Name: "row_cap_discards_rows", Group: "transaction", Note: "confirm a failed row-cap transaction leaves no rows", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)", "ROLLBACK", "SELECT count(*) FROM baseline_bulk"}},
 
 			// Supported behavior worth pinning.
 			{Name: "select_one", Group: "supported", Steps: one("SELECT 1")},

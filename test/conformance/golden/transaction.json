@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "recorded_at": "2026-09-15T20:29:41.079586Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -55,7 +55,7 @@
     {
       "name": "row_cap",
       "group": "transaction",
-      "note": "confirm the 3000-row DML cap SQLSTATE",
+      "note": "DSQL fails the statement that crosses the cap and aborts the transaction",
       "steps": [
         "BEGIN",
         "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)",
@@ -140,6 +140,7 @@
     {
       "name": "read_only",
       "group": "transaction",
+      "note": "DSQL refuses SET TRANSACTION and then the transaction is aborted",
       "steps": [
         "BEGIN",
         "SET TRANSACTION READ ONLY",
@@ -164,6 +165,209 @@
         {
           "outcome": "ok",
           "command_tag": "ROLLBACK"
+        }
+      ]
+    },
+    {
+      "name": "rejection_aborts_txn",
+      "group": "transaction",
+      "note": "a dialect refusal fails the transaction",
+      "steps": [
+        "BEGIN",
+        "TRUNCATE baseline_parent",
+        "SELECT 1",
+        "ROLLBACK"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Truncate"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "25P02",
+          "message": "current transaction is aborted, commands ignored until end of transaction block"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        }
+      ]
+    },
+    {
+      "name": "aborted_txn_prefers_25P02",
+      "group": "transaction",
+      "note": "in a failed transaction an unsupported statement reports 25P02 first",
+      "steps": [
+        "BEGIN",
+        "TRUNCATE baseline_parent",
+        "TRUNCATE baseline_parent",
+        "ROLLBACK"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Truncate"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "25P02",
+          "message": "current transaction is aborted, commands ignored until end of transaction block"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        }
+      ]
+    },
+    {
+      "name": "aborted_txn_recovers_after_rollback",
+      "group": "transaction",
+      "note": "ROLLBACK ends a failed transaction and the session is usable",
+      "steps": [
+        "BEGIN",
+        "SET TRANSACTION READ ONLY",
+        "ROLLBACK",
+        "SELECT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"TRANSACTION\" not supported"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rejection_outside_txn_does_not_abort",
+      "group": "transaction",
+      "note": "an implicit transaction is not failed by a refusal",
+      "steps": [
+        "TRUNCATE baseline_parent",
+        "SELECT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Truncate"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "row_cap_boundary",
+      "group": "transaction",
+      "note": "confirm exactly 3000 rows is allowed",
+      "steps": [
+        "BEGIN",
+        "INSERT INTO baseline_bulk SELECT generate_series(1, 3000)",
+        "SELECT 1",
+        "ROLLBACK"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 3000"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        }
+      ]
+    },
+    {
+      "name": "row_cap_discards_rows",
+      "group": "transaction",
+      "note": "confirm a failed row-cap transaction leaves no rows",
+      "steps": [
+        "BEGIN",
+        "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)",
+        "ROLLBACK",
+        "SELECT count(*) FROM baseline_bulk"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "54000",
+          "message": "transaction row limit exceeded"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "0"
+            ]
+          ]
         }
       ]
     }

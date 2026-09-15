@@ -15,6 +15,26 @@ import (
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
 )
 
+// SQLSTATE and message reported for statements that arrive while a transaction
+// is already failed.
+const (
+	stateInFailedTransaction   = "25P02"
+	messageInFailedTransaction = "current transaction is aborted, commands ignored until end of transaction block"
+)
+
+// abortTransactionQuery fails on purpose, which puts the upstream transaction
+// into the aborted state. Emitting it lets PostgreSQL itself answer COMMIT with
+// the ROLLBACK command tag and refuse later statements, matching Aurora DSQL.
+var abortTransactionQuery = func() []byte {
+	encoded, _ := (&pgproto3.Query{String: "SELECT 1/0"}).Encode(nil)
+	return encoded
+}()
+
+func encodeBackend(msg pgproto3.BackendMessage) []byte {
+	encoded, _ := msg.Encode(nil)
+	return encoded
+}
+
 // session relays one client connection. Client messages are framed and
 // classified, transaction rules are enforced, and backend messages are
 // forwarded verbatim while the session tracks transaction status.
@@ -25,9 +45,26 @@ type session struct {
 	classifier *classify.Classifier
 	tracker    *txn.Tracker
 
-	clientMu sync.Mutex
+	clientMu   sync.Mutex
+	upstreamMu sync.Mutex
+	stateMu    sync.Mutex
+
 	txStatus byte
+	// skipSync drops extended-protocol messages until the client's next Sync.
 	skipSync bool
+	// txnAborted reports that the client's transaction has failed and only
+	// COMMIT or ROLLBACK may end it.
+	txnAborted bool
+	// aborting suppresses upstream output while an abort is injected.
+	aborting    bool
+	abortTarget int
+	abortRFQs   int
+	// abortPending waits for the client's Sync before injecting the abort,
+	// because the upstream extended-query batch is still open.
+	abortPending bool
+	// inExtended is true between an extended-protocol message and the Sync that
+	// closes its batch.
+	inExtended bool
 
 	// statements maps a prepared statement name to the kinds of the statement
 	// it holds. Transaction rules are enforced when a statement is bound, not
@@ -102,16 +139,28 @@ func (s *session) pumpBackend() {
 		}
 		s.fromUpstream.Add(int64(len(msg.Raw)))
 
+		if s.swallowingAbort() {
+			s.consumeAbortMessage(msg)
+			continue
+		}
+
 		switch msg.Type {
 		case 'Z':
 			var rfq pgproto3.ReadyForQuery
 			if err := rfq.Decode(msg.Body); err == nil {
-				s.txStatus = rfq.TxStatus
+				s.setStateTxStatus(rfq.TxStatus)
 			}
 		case 'C':
 			var cc pgproto3.CommandComplete
 			if err := cc.Decode(msg.Body); err == nil {
 				s.tracker.RecordRows(txn.RowsFromCommandTag(string(cc.CommandTag)))
+				if s.rowLimitCrossed() {
+					// The statement already ran, so its success is withheld and
+					// the transaction is failed, matching DSQL.
+					s.sendError(txn.CodeProgramLimit, "transaction row limit exceeded", "dml_rows")
+					s.startRowLimitAbort()
+					continue
+				}
 			}
 		}
 
@@ -133,27 +182,52 @@ func (s *session) pumpFrontend() {
 			_ = s.writeUpstream(msg.Raw)
 			return
 		}
-		if s.skipSync {
-			if msg.Type == 'S' {
-				s.skipSync = false
-				s.forward(msg)
-			}
+
+		if msg.Type == 'S' {
+			s.handleSync(msg)
+			continue
+		}
+		if s.droppingUntilSync() {
 			continue
 		}
 
 		switch msg.Type {
 		case 'Q':
+			s.markExtended(false)
 			s.handleQuery(msg)
 		case 'P':
+			s.markExtended(true)
 			s.handleParse(msg)
 		case 'B':
+			s.markExtended(true)
 			s.handleBind(msg)
+		case 'D', 'E':
+			s.markExtended(true)
+			s.forward(msg)
 		case 'C':
 			s.handleClose(msg)
 		default:
 			s.forward(msg)
 		}
 	}
+}
+
+func (s *session) handleSync(msg wire.Message) {
+	s.markExtended(false)
+
+	s.stateMu.Lock()
+	pending := s.abortPending
+	s.abortPending = false
+	s.skipSync = false
+	s.stateMu.Unlock()
+
+	if pending {
+		// Close the upstream batch, then fail the transaction.
+		s.forward(msg)
+		s.beginAbort(2)
+		return
+	}
+	s.forward(msg)
 }
 
 func (s *session) handleQuery(msg wire.Message) {
@@ -165,6 +239,16 @@ func (s *session) handleQuery(msg wire.Message) {
 	query, ok := decoded.(*pgproto3.Query)
 	if !ok {
 		s.forward(msg)
+		return
+	}
+
+	if s.aborted() {
+		if s.endsTransaction(query.String) {
+			s.endAborted()
+			s.forward(msg)
+			return
+		}
+		s.rejectFailed(false)
 		return
 	}
 
@@ -195,6 +279,17 @@ func (s *session) handleParse(msg wire.Message) {
 	parse, ok := decoded.(*pgproto3.Parse)
 	if !ok {
 		s.forward(msg)
+		return
+	}
+
+	if s.aborted() {
+		result, err := s.classifier.Classify(parse.Query)
+		if err == nil && endsTransaction(result.Kinds) {
+			s.statements[parse.Name] = result.Kinds
+			s.forward(msg)
+			return
+		}
+		s.rejectFailed(true)
 		return
 	}
 
@@ -235,6 +330,17 @@ func (s *session) handleBind(msg wire.Message) {
 		s.forward(msg)
 		return
 	}
+
+	if s.aborted() {
+		if endsTransaction(kinds) {
+			s.endAborted()
+			s.forward(msg)
+			return
+		}
+		s.rejectFailed(true)
+		return
+	}
+
 	if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
 		s.reject(v.Code, v.Message, v.Rule, true)
 		return
@@ -259,39 +365,171 @@ func (s *session) handleClose(msg wire.Message) {
 	s.forward(msg)
 }
 
-// reject answers a refused statement without involving the upstream. In the
-// simple protocol the error closes the exchange with a ReadyForQuery; in the
-// extended protocol the client must be told to skip ahead to its next Sync.
+// reject answers a refused statement without involving the upstream. A refusal
+// inside a transaction fails the transaction, as it would on a real server.
 func (s *session) reject(code, message, rule string, extended bool) {
 	s.logger.Info("rejected statement", "rule", rule, "code", code, "message", message)
+	s.sendError(code, message, rule)
 
-	errMsg, err := (&pgproto3.ErrorResponse{
-		Severity: "ERROR",
-		Code:     code,
-		Message:  message,
-	}).Encode(nil)
-	if err != nil {
-		s.close()
-		return
-	}
-	if err := s.writeClient(errMsg); err != nil {
-		s.close()
+	if s.tracker.Stats().InTxn {
+		if extended {
+			s.deferAbortToSync()
+		} else {
+			s.beginAbort(1)
+		}
 		return
 	}
 
 	if extended {
+		s.stateMu.Lock()
 		s.skipSync = true
+		s.stateMu.Unlock()
 		return
 	}
+	s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: s.getStateTxStatus()}))
+}
 
-	rfq, err := (&pgproto3.ReadyForQuery{TxStatus: s.txStatus}).Encode(nil)
-	if err != nil {
-		s.close()
+// rejectFailed refuses a statement because the transaction is already failed.
+func (s *session) rejectFailed(extended bool) {
+	s.logger.Info("rejected statement in failed transaction", "code", stateInFailedTransaction)
+	s.sendError(stateInFailedTransaction, messageInFailedTransaction, "failed_transaction")
+
+	if extended {
+		s.stateMu.Lock()
+		s.skipSync = true
+		s.stateMu.Unlock()
 		return
 	}
-	if err := s.writeClient(rfq); err != nil {
-		s.close()
+	s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: 'E'}))
+}
+
+// beginAbort fails the upstream transaction and swallows the given number of
+// upstream ReadyForQuery messages before completing the client's exchange with
+// a failed-transaction status.
+func (s *session) beginAbort(swallowRFQs int) {
+	s.stateMu.Lock()
+	s.aborting = true
+	s.abortTarget = swallowRFQs
+	s.abortRFQs = 0
+	s.txnAborted = true
+	s.stateMu.Unlock()
+
+	_ = s.writeUpstream(abortTransactionQuery)
+}
+
+// deferAbortToSync waits for the client's Sync, because the upstream is still
+// inside an extended-query batch.
+func (s *session) deferAbortToSync() {
+	s.stateMu.Lock()
+	s.abortPending = true
+	s.skipSync = true
+	s.stateMu.Unlock()
+}
+
+func (s *session) startRowLimitAbort() {
+	if s.getInExtended() {
+		s.deferAbortToSync()
+		return
 	}
+	s.beginAbort(2)
+}
+
+func (s *session) swallowingAbort() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.aborting
+}
+
+func (s *session) consumeAbortMessage(msg wire.Message) {
+	if msg.Type != 'Z' {
+		return
+	}
+	s.stateMu.Lock()
+	s.abortRFQs++
+	done := s.abortRFQs >= s.abortTarget
+	if done {
+		s.aborting = false
+		s.abortRFQs = 0
+	}
+	s.stateMu.Unlock()
+
+	if done {
+		s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: 'E'}))
+	}
+}
+
+func (s *session) endAborted() {
+	s.stateMu.Lock()
+	s.txnAborted = false
+	s.skipSync = false
+	s.stateMu.Unlock()
+	s.tracker.Admit([]classify.Kind{classify.KindRollback}, time.Now())
+}
+
+func (s *session) aborted() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.txnAborted
+}
+
+func (s *session) getInExtended() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.inExtended
+}
+
+func (s *session) markExtended(in bool) {
+	s.stateMu.Lock()
+	s.inExtended = in
+	s.stateMu.Unlock()
+}
+
+func (s *session) droppingUntilSync() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.skipSync
+}
+
+func (s *session) getStateTxStatus() byte {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.txStatus
+}
+
+func (s *session) setStateTxStatus(status byte) {
+	s.stateMu.Lock()
+	s.txStatus = status
+	s.stateMu.Unlock()
+}
+
+func (s *session) rowLimitCrossed() bool {
+	stats := s.tracker.Stats()
+	return stats.InTxn && stats.OverRows
+}
+
+func (s *session) endsTransaction(sql string) bool {
+	result, err := s.classifier.Classify(sql)
+	return err == nil && endsTransaction(result.Kinds)
+}
+
+func endsTransaction(kinds []classify.Kind) bool {
+	for _, k := range kinds {
+		if k == classify.KindCommit || k == classify.KindRollback {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *session) sendError(code, message, rule string) {
+	if encoded := encodeBackend(&pgproto3.ErrorResponse{
+		Severity: "ERROR",
+		Code:     code,
+		Message:  message,
+	}); encoded != nil {
+		s.writeClient(encoded)
+	}
+	s.logger.Debug("sent error", "rule", rule, "code", code)
 }
 
 func (s *session) forward(msg wire.Message) {
@@ -301,6 +539,8 @@ func (s *session) forward(msg wire.Message) {
 }
 
 func (s *session) writeUpstream(b []byte) error {
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
 	_, err := s.upstream.Write(b)
 	return err
 }
