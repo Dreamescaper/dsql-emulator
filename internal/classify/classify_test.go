@@ -2,6 +2,7 @@ package classify_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/Dreamescaper/dsql-emulator/internal/classify"
@@ -52,15 +53,15 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			verdict, err := c.Classify(tc.sql)
+			result, err := c.Classify(tc.sql)
 			if err != nil {
 				t.Fatalf("classify %q: %v", tc.sql, err)
 			}
-			if verdict.RuleID != tc.rule {
-				t.Fatalf("got rule %q want %q", verdict.RuleID, tc.rule)
+			if result.Verdict.RuleID != tc.rule {
+				t.Fatalf("got rule %q want %q", result.Verdict.RuleID, tc.rule)
 			}
-			if verdict.Code != "0A000" {
-				t.Fatalf("got SQLSTATE %q want 0A000", verdict.Code)
+			if result.Verdict.Code != "0A000" {
+				t.Fatalf("got SQLSTATE %q want 0A000", result.Verdict.Code)
 			}
 		})
 	}
@@ -83,12 +84,12 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 	}
 
 	for _, sql := range sqls {
-		verdict, err := c.Classify(sql)
+		result, err := c.Classify(sql)
 		if err != nil {
 			t.Fatalf("classify %q: %v", sql, err)
 		}
-		if verdict.Rejected() {
-			t.Fatalf("%q unexpectedly rejected by rule %q", sql, verdict.RuleID)
+		if result.Verdict.Rejected() {
+			t.Fatalf("%q unexpectedly rejected by rule %q", sql, result.Verdict.RuleID)
 		}
 	}
 }
@@ -107,5 +108,94 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	bad := []byte("dsql_version: x\nunknown_key: 1\n")
 	if _, err := rules.Load(bytes.NewReader(bad)); err == nil {
 		t.Fatal("expected error for unknown ruleset field")
+	}
+}
+
+func TestClassifyReportsStatementKinds(t *testing.T) {
+	c := newClassifier(t)
+
+	cases := []struct {
+		sql  string
+		want []classify.Kind
+	}{
+		{"SELECT 1", []classify.Kind{classify.KindSelect}},
+		{"INSERT INTO t VALUES (1)", []classify.Kind{classify.KindDML}},
+		{"UPDATE t SET a = 1", []classify.Kind{classify.KindDML}},
+		{"DELETE FROM t", []classify.Kind{classify.KindDML}},
+		{"CREATE TABLE t (id int)", []classify.Kind{classify.KindDDL}},
+		{"ALTER TABLE t ADD COLUMN a int", []classify.Kind{classify.KindDDL}},
+		{"DROP TABLE t", []classify.Kind{classify.KindDDL}},
+		{"CREATE INDEX idx ON t (a)", []classify.Kind{classify.KindDDL}},
+		{"BEGIN", []classify.Kind{classify.KindBegin}},
+		{"START TRANSACTION", []classify.Kind{classify.KindBegin}},
+		{"COMMIT", []classify.Kind{classify.KindCommit}},
+		{"ROLLBACK", []classify.Kind{classify.KindRollback}},
+		{"SELECT 1; INSERT INTO t VALUES (1)", []classify.Kind{classify.KindSelect, classify.KindDML}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			result, err := c.Classify(tc.sql)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if len(result.Kinds) != len(tc.want) {
+				t.Fatalf("got %v want %v", result.Kinds, tc.want)
+			}
+			for i := range tc.want {
+				if result.Kinds[i] != tc.want[i] {
+					t.Fatalf("got %v want %v", result.Kinds, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestClassifyRejectsUnsupportedIsolation(t *testing.T) {
+	c := newClassifier(t)
+
+	sqls := []string{
+		"BEGIN ISOLATION LEVEL SERIALIZABLE",
+		"START TRANSACTION ISOLATION LEVEL READ COMMITTED",
+		"SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+		"SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+		"SET default_transaction_isolation = 'serializable'",
+	}
+
+	for _, sql := range sqls {
+		t.Run(sql, func(t *testing.T) {
+			result, err := c.Classify(sql)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if result.Verdict.Code != "0A000" {
+				t.Fatalf("got SQLSTATE %q want 0A000", result.Verdict.Code)
+			}
+			if !strings.Contains(result.Verdict.Message, "Unsupported isolation level") {
+				t.Fatalf("message %q does not mention the isolation level", result.Verdict.Message)
+			}
+		})
+	}
+}
+
+func TestClassifyAllowsRepeatableReadIsolation(t *testing.T) {
+	c := newClassifier(t)
+
+	sqls := []string{
+		"BEGIN ISOLATION LEVEL REPEATABLE READ",
+		"SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+		"SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+		"SET default_transaction_isolation = 'repeatable read'",
+		"SET TRANSACTION READ ONLY",
+	}
+
+	for _, sql := range sqls {
+		result, err := c.Classify(sql)
+		if err != nil {
+			t.Fatalf("classify %q: %v", sql, err)
+		}
+		if result.Verdict.Rejected() {
+			t.Fatalf("%q unexpectedly rejected by %q", sql, result.Verdict.RuleID)
+		}
 	}
 }

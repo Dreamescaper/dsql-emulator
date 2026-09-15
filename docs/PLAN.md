@@ -106,16 +106,31 @@ SQLSTATE: 40001
 
 ## Session FSM rules
 
-All require parsing, not regex:
+Enforced by parsing, not regex. A "batch" is one simple `Query` (which may hold
+several statements) or one prepared statement; a batch outside an explicit
+transaction is its own implicit transaction.
 
-- Force `REPEATABLE READ`; reject `SERIALIZABLE` with
-  "Unsupported isolation level: SERIALIZABLE".
+- Force `REPEATABLE READ`. The startup message is rewritten to carry
+  `default_transaction_isolation = repeatable read`, and any statement that asks
+  for another level is rejected with `0A000` and
+  "Unsupported isolation level: <LEVEL>".
 - Exactly one DDL per transaction.
 - DDL and DML must be in separate transactions.
-- DML row cap per transaction (3000) — sum `CommandComplete` row tags across the
-  transaction.
-- Transaction age limit (30 minutes) → `54000`.
-- Reject savepoints, disallowed `SET TRANSACTION` modes, and mixed txn modes.
+- DML row cap per transaction (3000) — rows are summed from `CommandComplete`
+  tags. The batch that crosses the cap has already run, so the *next* batch that
+  is not a ROLLBACK is refused with `54000`.
+- Transaction age limit (30 minutes) → `54000` on the next batch.
+- A ROLLBACK is always admitted, so a client can escape a transaction that has
+  already breached a limit.
+
+Known gaps, tracked as the transaction-coordinator milestone:
+
+- The backend transaction is not rolled back when a limit is breached; the
+  client is expected to ROLLBACK, and no statement is allowed to commit
+  meanwhile. There is no `25P02` aborted-transaction state.
+- A row cap exceeded by an implicit (single-statement) transaction is reported
+  but not prevented, because the backend has already committed it. Preventing it
+  needs implicit transactions to be wrapped in an explicit backend transaction.
 
 ## Ruleset
 
@@ -151,6 +166,9 @@ unsupported:
     code: "0A000"
     message: "materialized views are not supported"
 
+isolation:
+  supported: ["repeatable read"]
+
 limits:
   dml_rows_per_txn: 3000
   txn_age_seconds: 1800
@@ -165,7 +183,7 @@ occ:
 
 Available predicates: `relpersistence`, `column_type`, `objtype`, `txn_kind`.
 The `since` field is reserved for version-gating a rule, and `rewrites` (for
-`CREATE INDEX ASYNC`) lands in M5. Foreign keys carry no rule: they are
+`CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule: they are
 supported, so they are simply forwarded, and they appear only as an OCC source.
 
 ## Milestones
@@ -174,11 +192,12 @@ supported, so they are simply forwarded, and they appear only as an OCC source.
 |----|-------------|--------|
 | M0 | Wire proxy passthrough, 1:1 pinning, pgx round-trip test | done |
 | M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | done |
-| M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | next |
-| M3 | Auth/TLS/version emulation; single DB; UTC/C collation | planned |
-| M4 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
-| M5 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
-| M6 | Conformance harness vs a real cluster (opt-in) | planned |
+| M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
+| M3 | Transaction coordinator: backend rollback, aborted-transaction state, implicit-transaction wrapping | next |
+| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | planned |
+| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
+| M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
+| M7 | Conformance harness vs a real cluster (opt-in) | planned |
 
 ## Repository layout
 
@@ -186,13 +205,13 @@ supported, so they are simply forwarded, and they appear only as an OCC source.
 cmd/dsql-emu/            CLI entry point
 internal/proxy/          session handling, interception, raw relay fallback
 internal/wire/           protocol framing and message decoding
-internal/classify/       libpg_query AST → verdict
+internal/classify/       libpg_query AST → verdict and statement kinds
+internal/txn/            transaction state machine and limits      (M2)
+internal/occ/            conflict injection/adjudication           (M5)
+internal/sysjobs/        sys schema emulation                      (M6)
 rules/                   embedded versioned ruleset and loader
-internal/session/        transaction state machine      (M2)
-internal/occ/            conflict injection/adjudication (M4)
-internal/sysjobs/        sys schema emulation           (M5)
 test/integration/        container-backed tests
-test/conformance/        live-cluster fixtures         (M6)
+test/conformance/        live-cluster fixtures                    (M7)
 ```
 
 ## Verification backlog

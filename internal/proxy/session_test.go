@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/Dreamescaper/dsql-emulator/internal/classify"
+	"github.com/Dreamescaper/dsql-emulator/internal/txn"
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
 	"github.com/Dreamescaper/dsql-emulator/rules"
 )
@@ -41,7 +42,11 @@ func newTestSession(t *testing.T) *testSession {
 		client:     clientProxy,
 		upstream:   upstreamProxy,
 		classifier: classify.New(rs),
-		txStatus:   'I',
+		tracker: txn.New(txn.Limits{
+			DMLRows: rs.Limits.DMLRowsPerTxn,
+			MaxAge:  time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
+		}),
+		txStatus: 'I',
 	}
 
 	ts := &testSession{
@@ -212,4 +217,116 @@ func TestSessionRejectsSerialColumn(t *testing.T) {
 	if !strings.Contains(er.Message, "serial") {
 		t.Fatalf("message %q does not mention serial", er.Message)
 	}
+}
+
+// roundTrip sends a simple query, answers it as the backend would, and drains
+// the forwarded response from the client side. Backend messages are sent one at
+// a time because the session forwards each one synchronously.
+func (ts *testSession) roundTrip(t *testing.T, sql, tag string, status byte) {
+	t.Helper()
+
+	ts.send(t, &pgproto3.Query{String: sql})
+	if got := ts.expectBackendQuery(t); got != sql {
+		t.Fatalf("backend received %q want %q", got, sql)
+	}
+
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte(tag)})
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected CommandComplete to reach the client")
+	}
+
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery to reach the client")
+	}
+}
+
+// expectRejectedQuery asserts the query is refused with code and returns the
+// transaction status reported alongside the error.
+func (ts *testSession) expectRejectedQuery(t *testing.T, sql, code string) byte {
+	t.Helper()
+
+	ts.send(t, &pgproto3.Query{String: sql})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatalf("%q: expected ErrorResponse", sql)
+	}
+	if er.Code != code {
+		t.Fatalf("%q: got SQLSTATE %q want %q (%s)", sql, er.Code, code, er.Message)
+	}
+	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
+	if !ok {
+		t.Fatalf("%q: expected ReadyForQuery after rejection", sql)
+	}
+	return rfq.TxStatus
+}
+
+func (ts *testSession) expectBackendQuery(t *testing.T) string {
+	t.Helper()
+	msg := ts.receiveBackend(t)
+	q, ok := msg.(*pgproto3.Query)
+	if !ok {
+		t.Fatalf("expected Query at the backend, got %T", msg)
+	}
+	return q.String
+}
+
+func TestSessionEnforcesOneDDLPerTransaction(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "CREATE TABLE a (id int)", "CREATE TABLE", 'T')
+
+	if status := ts.expectRejectedQuery(t, "CREATE TABLE b (id int)", "0A000"); status != 'T' {
+		t.Fatalf("got tx status %q want T", status)
+	}
+}
+
+func TestSessionEnforcesDDLandDMLSeparation(t *testing.T) {
+	t.Run("ddl then dml", func(t *testing.T) {
+		ts := newTestSession(t)
+		ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+		ts.roundTrip(t, "CREATE TABLE a (id int)", "CREATE TABLE", 'T')
+		ts.expectRejectedQuery(t, "INSERT INTO a VALUES (1)", "0A000")
+	})
+
+	t.Run("dml then ddl", func(t *testing.T) {
+		ts := newTestSession(t)
+		ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+		ts.roundTrip(t, "INSERT INTO a VALUES (1)", "INSERT 0 1", 'T')
+		ts.expectRejectedQuery(t, "CREATE TABLE b (id int)", "0A000")
+	})
+}
+
+func TestSessionAllowsDDLInSeparateTransactions(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.roundTrip(t, "CREATE TABLE a (id int)", "CREATE TABLE", 'I')
+	ts.roundTrip(t, "CREATE TABLE b (id int)", "CREATE TABLE", 'I')
+}
+
+func TestSessionRejectsDDLAndDMLInOneImplicitTransaction(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.expectRejectedQuery(t, "CREATE TABLE a (id int); INSERT INTO a VALUES (1)", "0A000")
+}
+
+func TestSessionEnforcesRowCapAndAllowsRollback(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "DELETE FROM big", "DELETE 5000", 'T')
+
+	if status := ts.expectRejectedQuery(t, "SELECT 1", "54000"); status != 'T' {
+		t.Fatalf("got tx status %q want T", status)
+	}
+
+	// The client must still be able to escape the transaction.
+	ts.roundTrip(t, "ROLLBACK", "ROLLBACK", 'I')
+}
+
+func TestSessionRejectsUnsupportedIsolation(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.expectRejectedQuery(t, "BEGIN ISOLATION LEVEL SERIALIZABLE", "0A000")
 }

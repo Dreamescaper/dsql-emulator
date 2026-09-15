@@ -6,10 +6,10 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**M1 complete.** The emulator relays the PostgreSQL wire protocol, frames and
-classifies client statements against a versioned ruleset, and rejects
-unsupported SQL with real SQLSTATEs while forwarding everything else. Unit and
-container-backed integration tests pass.
+**M2 complete.** On top of the M1 classifier, the emulator now enforces Aurora
+DSQL's transaction rules per session: fixed `REPEATABLE READ`, one DDL per
+transaction, DDL/DML separation, the 3000-row DML cap, and the 30-minute
+transaction age limit. Unit and container-backed integration tests pass.
 
 Last updated: 2026-09-15.
 
@@ -34,6 +34,63 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### M2 — transaction state machine (2026-09-15)
+
+Delivered:
+
+- `internal/txn/` — `Tracker` for Aurora DSQL's transaction rules, plus
+  `RowsFromCommandTag` for reading affected-row counts out of `CommandComplete`
+  tags.
+- `rules/` — new `isolation.supported` setting; the ruleset now states which
+  isolation levels are accepted.
+- `internal/classify/` — `Classify` now returns a `Result` carrying the verdict
+  *and* a `Kind` per statement (`select`, `dml`, `ddl`, `begin`, `commit`,
+  `rollback`). Isolation requests are detected in `BEGIN`/`START TRANSACTION`
+  options, `SET TRANSACTION`, `SET SESSION CHARACTERISTICS`, and
+  `SET [default_]transaction_isolation`, and refused with `0A000` and
+  "Unsupported isolation level: <LEVEL>".
+- `internal/wire/` — `SetStartupParameter` re-encodes the startup message so the
+  upstream session is pinned to `REPEATABLE READ`.
+- `internal/proxy/session.go` — startup rewrite, per-batch `Admit` before
+  forwarding, and `CommandComplete` row accounting in the backend pump.
+- Tests: `internal/txn/txn_test.go` (rule matrix, age limit, row cap,
+  `RowsFromCommandTag`), `internal/classify/classify_test.go` (statement kinds,
+  isolation accept/reject), `internal/proxy/session_test.go` (rule enforcement
+  through the wire protocol).
+
+Verification:
+
+```
+gofmt -l .                                 # no output
+go build ./...                             # ok
+go vet ./...  && go vet -tags integration ./...   # ok
+go test ./...                              # ok: internal/{classify,proxy,txn,wire}
+go test -tags integration -count=1 ./test/...
+```
+
+Integration run — all fifteen subtests pass, including the six new ones:
+
+- `isolation_is_repeatable_read` — `SHOW transaction_isolation` returns
+  `repeatable read`, proving the startup rewrite reaches the backend
+- `rejects_unsupported_isolation_level` — `BEGIN ISOLATION LEVEL SERIALIZABLE` → `0A000`
+- `rejects_second_DDL_in_a_transaction` → `0A000`
+- `rejects_DDL_and_DML_in_one_transaction` → `0A000`
+- `allows_DDL_and_DML_in_separate_transactions` — both succeed
+- `enforces_the_row_cap_and_permits_rollback` — a 3001-row insert makes the next
+  statement return `54000`, and `ROLLBACK` still works
+
+Deliberate limitations (now the M3 transaction-coordinator milestone):
+
+- The backend transaction is not rolled back when a limit is breached. The
+  client is expected to ROLLBACK, and no statement is allowed to commit
+  meanwhile; there is no `25P02` aborted-transaction state.
+- A row cap exceeded by an implicit single-statement transaction is not
+  prevented, because the backend has already committed it.
+- DDL/DML and row counts are attributed at `Parse` time, so re-executing one
+  prepared statement several times in a transaction counts rows but not
+  statements.
+- The exact text of DSQL's rejection messages still mirrors meaning, not wording.
 
 ### M1 — AST classifier and rejection (2026-09-15)
 
@@ -162,25 +219,28 @@ with zero protocol assumptions.
 | 2026-09-15 | Ruleset lives in `rules/` as a package | `go:embed` cannot reach outside its package directory, so the loader and the YAML share `rules/` instead of splitting across `internal/rules` and `rules/`. |
 | 2026-09-15 | Parse errors are forwarded, not rejected | DSQL-only syntax such as `CREATE INDEX ASYNC` does not parse with stock libpg_query. Treating parse failure as incompatibility would wrongly reject valid DSQL. |
 | 2026-09-15 | Extended-protocol rejection drops messages until `Sync` | Mirrors PostgreSQL: after an error the server ignores messages until the next `Sync`, and this keeps the upstream connection in step with the client. |
-| 2026-09-15 | No per-connection prepared-statement tracking in M1 | Classification happens where the SQL text arrives (`Query`, `Parse`), so the name-to-SQL map is not yet needed. It returns in M2 for row counting across `Execute`. |
+| 2026-09-15 | No per-connection prepared-statement tracking in M1 | Classification happens where the SQL text arrives (`Query`, `Parse`), so the name-to-SQL map is not yet needed. |
 | 2026-09-15 | TLS-negotiated connections fall back to raw relay | The emulator does not terminate TLS or hold the upstream key, so it cannot see inside a session the client encrypts end to end. |
+| 2026-09-15 | Pin the backend to REPEATABLE READ via a startup parameter | `SetStartupParameter` rewrites the startup message; an injected `SET` would require a synchronous round trip that deadlocks when the client authenticates with a password. |
+| 2026-09-15 | Row counts come from `CommandComplete`, not statement tracking | The command tag already carries affected rows, so the name-to-SQL map is not needed for the row cap. Tracking is deferred until something else needs it. |
+| 2026-09-15 | Limits are enforced at batch boundaries, not mid-exchange | A batch already executing cannot be un-sent, and a refusal is only safe before forwarding. Crossing the cap therefore fails the *next* batch, and ROLLBACK is always admitted so the client can escape. |
+| 2026-09-15 | M2 split; transaction coordinator deferred to M3 | Auto-rollback and the aborted-transaction state need the same rollback orchestration the OCC adjudicator needs, so building it once avoids doing it twice. |
 
 ## Next up
 
-### M2 — session transaction state machine
+### M3 — transaction coordinator
 
-- Parse `BEGIN` / `COMMIT` / `ROLLBACK` / `SET TRANSACTION` and enforce
-  `REPEATABLE READ`, rejecting `SERIALIZABLE`.
-- Enforce one DDL per transaction and separate DDL from DML transactions.
-- Enforce the 3000-row DML cap by summing `CommandComplete` row tags across a
-  transaction, and the 30-minute transaction age limit.
-- Track begin time and row counts per session; reset on transaction end.
-- Unit tests for each rule plus integration tests proving a violation surfaces
-  the expected SQLSTATE and rolls back.
+- Roll the backend transaction back when a limit is breached, instead of relying
+  on the client to ROLLBACK.
+- Model the aborted-transaction state: after any rejection inside an explicit
+  transaction, refuse later statements with `25P02` until ROLLBACK, and answer
+  COMMIT with a `ROLLBACK` command tag.
+- Wrap implicit transactions in an explicit backend transaction so a row-cap
+  breach is prevented rather than merely reported.
+- Widen the startup rewrite into the place where TLS termination and IAM-token
+  auth will land (M4).
 
-### Carried into M2 from M1
+### Carried forward
 
-- Per-connection prepared-statement tracking, needed to count rows produced by
-  `Execute` when the statement was prepared by an earlier `Parse`.
 - Verify the provisional ruleset entries against a live cluster (see the PLAN.md
   verification backlog).

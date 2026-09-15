@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dreamescaper/dsql-emulator/internal/classify"
+	"github.com/Dreamescaper/dsql-emulator/internal/txn"
 	"github.com/Dreamescaper/dsql-emulator/rules"
 )
 
@@ -132,12 +133,17 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	defer p.untrack(client)
 	defer p.untrack(upstream)
 
+	limits := p.classifier.Ruleset().Limits
 	s := &session{
 		logger:     log,
 		client:     client,
 		upstream:   upstream,
 		classifier: p.classifier,
-		txStatus:   'I',
+		tracker: txn.New(txn.Limits{
+			DMLRows: limits.DMLRowsPerTxn,
+			MaxAge:  time.Duration(limits.TxnAgeSeconds) * time.Second,
+		}),
+		txStatus: 'I',
 	}
 
 	start := time.Now()
@@ -145,10 +151,10 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	switch {
 	case err != nil:
 		log.Debug("handshake ended", "err", err)
-	case intercept:
-		s.run()
-	default:
+	case !intercept:
 		relay(upstream, client, &s.fromClient, &s.fromUpstream)
+	default:
+		s.run()
 	}
 
 	log.Debug("connection closed",

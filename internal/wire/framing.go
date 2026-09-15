@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 // maxMessageLength bounds a single framed message. PostgreSQL's own limit is
@@ -14,11 +16,18 @@ const maxMessageLength = 1 << 28
 
 // Protocol codes carried in the first four bytes of an untagged startup message.
 const (
-	ProtocolVersion3 = 196608
-	SSLRequestCode   = 80877103
-	GSSENCRequest    = 80877104
-	CancelRequest    = 80877102
+	ProtocolVersion3  = 196608
+	ProtocolVersion32 = 196610
+	SSLRequestCode    = 80877103
+	GSSENCRequest     = 80877104
+	CancelRequest     = 80877102
 )
+
+// IsStartup reports whether code identifies an opening startup message rather
+// than a special request.
+func IsStartup(code int32) bool {
+	return code == ProtocolVersion3 || code == ProtocolVersion32
+}
 
 // Message is one framed protocol message. Raw is the complete frame, including
 // the type byte and the length prefix, and is what a proxy should forward.
@@ -56,6 +65,7 @@ func ReadTagged(r io.Reader) (Message, error) {
 // followed by a protocol version or a special request code.
 type Startup struct {
 	Code int32
+	Body []byte
 	Raw  []byte
 }
 
@@ -78,5 +88,25 @@ func ReadStartup(r io.Reader) (Startup, error) {
 	raw := make([]byte, 0, length)
 	raw = append(raw, lenBuf[:]...)
 	raw = append(raw, rest...)
-	return Startup{Code: int32(binary.BigEndian.Uint32(rest[:4])), Raw: raw}, nil
+	return Startup{Code: int32(binary.BigEndian.Uint32(rest[:4])), Body: rest, Raw: raw}, nil
+}
+
+// SetStartupParameter re-encodes a startup message with one parameter set.
+// If the message cannot be decoded it is returned unchanged, so malformed input
+// still reaches the server.
+func SetStartupParameter(startup Startup, key, value string) []byte {
+	var msg pgproto3.StartupMessage
+	if err := msg.Decode(startup.Body); err != nil {
+		return startup.Raw
+	}
+	if msg.Parameters == nil {
+		msg.Parameters = make(map[string]string)
+	}
+	msg.Parameters[key] = value
+
+	encoded, err := msg.Encode(nil)
+	if err != nil {
+		return startup.Raw
+	}
+	return encoded
 }

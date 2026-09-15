@@ -17,10 +17,17 @@ var defaultRuleset []byte
 
 // Ruleset is a versioned snapshot of Aurora DSQL's supported surface.
 type Ruleset struct {
-	DSQLVersion string `yaml:"dsql_version"`
-	Unsupported []Rule `yaml:"unsupported"`
-	Limits      Limits `yaml:"limits"`
-	OCC         OCC    `yaml:"occ"`
+	DSQLVersion string    `yaml:"dsql_version"`
+	Unsupported []Rule    `yaml:"unsupported"`
+	Isolation   Isolation `yaml:"isolation"`
+	Limits      Limits    `yaml:"limits"`
+	OCC         OCC       `yaml:"occ"`
+}
+
+// Isolation lists the transaction isolation levels Aurora DSQL accepts. It
+// reports REPEATABLE READ and rejects every other level the client asks for.
+type Isolation struct {
+	Supported []string `yaml:"supported"`
 }
 
 // Rule rejects a statement that matches every predicate it sets. An empty
@@ -75,6 +82,9 @@ func Load(r io.Reader) (*Ruleset, error) {
 func (rs *Ruleset) validate() error {
 	if rs.DSQLVersion == "" {
 		return errors.New("ruleset: dsql_version is required")
+	}
+	if len(rs.Isolation.Supported) == 0 {
+		return errors.New("ruleset: isolation.supported must list at least one level")
 	}
 	seen := make(map[string]bool, len(rs.Unsupported))
 	for i, r := range rs.Unsupported {

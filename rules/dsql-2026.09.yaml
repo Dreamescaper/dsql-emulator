@@ -114,6 +114,9 @@ unsupported:
     code: "0A000"
     message: "user-defined functions are not supported"
 
+isolation:
+  supported: ["repeatable read"]
+
 limits:
   dml_rows_per_txn: 3000
   txn_age_seconds: 1800

@@ -162,6 +162,79 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 			t.Fatalf("create child with foreign key: %v", err)
 		}
 	})
+
+	t.Run("isolation is repeatable read", func(t *testing.T) {
+		var level string
+		if err := conn.QueryRow(ctx, "show transaction_isolation").Scan(&level); err != nil {
+			t.Fatalf("show transaction_isolation: %v", err)
+		}
+		if level != "repeatable read" {
+			t.Fatalf("got %q want %q", level, "repeatable read")
+		}
+	})
+
+	t.Run("rejects unsupported isolation level", func(t *testing.T) {
+		_, err := conn.Exec(ctx, "BEGIN ISOLATION LEVEL SERIALIZABLE")
+		assertSQLState(t, err, "0A000")
+	})
+
+	t.Run("rejects second DDL in a transaction", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "create table if not exists txn_ddl_a (id int)"); err != nil {
+			t.Fatalf("first ddl: %v", err)
+		}
+		_, err := conn.Exec(ctx, "create table if not exists txn_ddl_b (id int)")
+		assertSQLState(t, err, "0A000")
+
+		if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+	})
+
+	t.Run("rejects DDL and DML in one transaction", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "create table if not exists txn_mix (id int)"); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+		_, err := conn.Exec(ctx, "insert into txn_mix values (1)")
+		assertSQLState(t, err, "0A000")
+
+		if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+	})
+
+	t.Run("allows DDL and DML in separate transactions", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists txn_sep (id int)"); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "insert into txn_sep values (1)"); err != nil {
+			t.Fatalf("dml: %v", err)
+		}
+	})
+
+	t.Run("enforces the row cap and permits rollback", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists txn_bulk (id int)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "insert into txn_bulk select generate_series(1, 3001)"); err != nil {
+			t.Fatalf("bulk insert: %v", err)
+		}
+
+		_, err := conn.Exec(ctx, "select 1")
+		assertSQLState(t, err, "54000")
+
+		if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+	})
 }
 
 func assertSQLState(t *testing.T, err error, want string) {
