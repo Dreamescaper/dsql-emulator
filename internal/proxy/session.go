@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"strings"
@@ -77,6 +79,11 @@ type session struct {
 	// inExtended is true between an extended-protocol message and the Sync that
 	// closes its batch.
 	inExtended bool
+
+	// asyncIndex, when set, is the result the emulator synthesizes for the
+	// CREATE INDEX ASYNC in flight; described records whether the client's
+	// Describe already produced the row description.
+	asyncIndex *asyncIndexResult
 
 	// statements maps a prepared statement name to the kinds of the statement
 	// it holds. Transaction rules are enforced when a statement is bound, not
@@ -177,6 +184,12 @@ func (s *session) pumpBackend() {
 		}
 
 		switch msg.Type {
+		case 'n':
+			// Describe for an async index build reports a job_id column.
+			if s.markAsyncIndexDescribed() {
+				s.writeClient(jobIDRowDescription())
+				continue
+			}
 		case 'S':
 			if s.rewriteParameterStatus(msg) {
 				continue
@@ -187,6 +200,13 @@ func (s *session) pumpBackend() {
 				s.setStateTxStatus(rfq.TxStatus)
 			}
 		case 'C':
+			if was, described := s.takeAsyncIndex(); was {
+				if !described {
+					s.writeClient(jobIDRowDescription())
+				}
+				s.writeClient(jobIDDataRow(newJobID()))
+			}
+
 			var cc pgproto3.CommandComplete
 			if err := cc.Decode(msg.Body); err == nil {
 				s.tracker.RecordRows(txn.RowsFromCommandTag(string(cc.CommandTag)))
@@ -278,6 +298,11 @@ func (s *session) handleQuery(msg wire.Message) {
 		return
 	}
 
+	if rewritten, ok := rewriteAsyncIndex(query.String); ok {
+		s.forwardAsyncIndex(msg, query, rewritten, false)
+		return
+	}
+
 	if s.aborted() {
 		if s.endsTransaction(query.String) {
 			s.endAborted()
@@ -322,6 +347,11 @@ func (s *session) handleParse(msg wire.Message) {
 	parse, ok := decoded.(*pgproto3.Parse)
 	if !ok {
 		s.forward(msg)
+		return
+	}
+
+	if rewritten, ok := rewriteAsyncIndex(parse.Query); ok {
+		s.forwardAsyncIndex(msg, parse, rewritten, true)
 		return
 	}
 
@@ -591,6 +621,41 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 	return s.writeClient(encoded) == nil
 }
 
+// forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
+// the PostgreSQL parser cannot read. It applies the transaction rules as DDL,
+// then forwards the rewritten statement so the index is built synchronously.
+func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten string, extended bool) {
+	kinds := []classify.Kind{classify.KindDDL}
+
+	if s.aborted() {
+		s.rejectFailed(extended)
+		return
+	}
+	if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
+		s.reject(v.Code, v.Message, v.Rule, extended)
+		return
+	}
+
+	s.stateMu.Lock()
+	s.asyncIndex = &asyncIndexResult{}
+	s.stateMu.Unlock()
+
+	switch m := frontend.(type) {
+	case *pgproto3.Query:
+		m.String = rewritten
+	case *pgproto3.Parse:
+		m.Query = rewritten
+		s.statements[m.Name] = kinds
+	}
+
+	encoded, err := frontend.Encode(nil)
+	if err != nil {
+		s.forward(msg)
+		return
+	}
+	_ = s.writeUpstream(encoded)
+}
+
 // rewriteSQL maps the few statements that report the server version onto an
 // equivalent that returns Aurora DSQL's value. It returns "" when the statement
 // needs no change.
@@ -605,6 +670,58 @@ func (s *session) rewriteSQL(sql string) string {
 	default:
 		return ""
 	}
+}
+
+// asyncIndexResult tracks the synthesized result of an async index build.
+type asyncIndexResult struct {
+	described bool
+}
+
+func (s *session) markAsyncIndexDescribed() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.asyncIndex == nil || s.asyncIndex.described {
+		return false
+	}
+	s.asyncIndex.described = true
+	return true
+}
+
+func (s *session) takeAsyncIndex() (bool, bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.asyncIndex == nil {
+		return false, false
+	}
+	described := s.asyncIndex.described
+	s.asyncIndex = nil
+	return true, described
+}
+
+// jobIDRowDescription describes the single text column DSQL returns from
+// CREATE INDEX ASYNC.
+func jobIDRowDescription() []byte {
+	return encodeBackend(&pgproto3.RowDescription{Fields: []pgproto3.FieldDescription{{
+		Name:                 []byte("job_id"),
+		DataTypeOID:          25,
+		DataTypeSize:         -1,
+		TypeModifier:         -1,
+		TableAttributeNumber: 0,
+		Format:               0,
+	}}})
+}
+
+func jobIDDataRow(id string) []byte {
+	return encodeBackend(&pgproto3.DataRow{Values: [][]byte{[]byte(id)}})
+}
+
+// newJobID returns an opaque identifier shaped like the ones DSQL issues.
+func newJobID() string {
+	buf := make([]byte, 13)
+	if _, err := rand.Read(buf); err != nil {
+		return "0000000000000000000000000"
+	}
+	return hex.EncodeToString(buf)
 }
 
 func (s *session) sendError(code, message, rule string) {

@@ -34,6 +34,31 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M6 — async indexes and sys.jobs (2026-09-15)
+
+`CREATE INDEX ASYNC` now works end to end, closing the last two conformance
+gaps.
+
+- `internal/proxy/rewrite.go` removes the `ASYNC` keyword before the statement
+  is parsed, because libpg_query rejects it. The statement is otherwise
+  preserved, and the transaction rules treat it as the DDL it is.
+- The emulator answers with the `job_id` row DSQL returns: `Describe` is served
+  a `job_id` text column instead of `NoData`, and an `Execute` result gains a
+  generated id before the command tag.
+- `docker/init/01-sys.sql` creates `sys.jobs` and `sys.wait_for_job` in the
+  backing database, and `docker-compose.yml` mounts it. `IgnoreRows` now skips
+  only the row comparison, so the `job_id` column is still checked.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `102 cases match the golden record` with no known gaps left. New
+integration subtests `async index reports a job id` and `synchronous index is
+still refused`.
+
+Deliberate limitation: the emulator builds the index synchronously and does not
+record a row in `sys.jobs`, so `sys.jobs` is present but empty and
+`sys.wait_for_job` is a stub. The surface matches; the job lifecycle does not.
+
 ### M4 (part 1) — TLS termination and version reporting (2026-09-15)
 
 - `internal/proxy/tls.go` — self-signed certificate generation and loading from

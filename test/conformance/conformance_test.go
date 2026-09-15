@@ -110,6 +110,7 @@ func startEmulator(t *testing.T, ctx context.Context) *pgx.Conn {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
+		postgres.WithInitScripts("../../docker/init/01-sys.sql"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).

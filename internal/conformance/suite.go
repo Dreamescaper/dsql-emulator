@@ -162,8 +162,8 @@ func DefaultSuite() Suite {
 
 		// Index dialect: DSQL requires ASYNC.
 		{Name: "create_index_sync", Group: "index", Note: "DSQL requires ASYNC; sync should be refused", Steps: one("CREATE INDEX baseline_idx_value ON baseline_idx (value)")},
-		{Name: "create_index_async", Group: "index", Steps: one("CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"), KnownGap: "M6: the emulator does not rewrite CREATE INDEX ASYNC yet"},
-		{Name: "sys_jobs", Group: "index", Steps: one("SELECT count(*) AS n FROM sys.jobs"), IgnoreRows: true, KnownGap: "M6: sys.jobs is not emulated"},
+		{Name: "create_index_async", Group: "index", Note: "returns a generated job_id", Steps: one("CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"), IgnoreRows: true},
+		{Name: "sys_jobs", Group: "index", Steps: one("SELECT count(*) AS n FROM sys.jobs"), IgnoreRows: true},
 
 		// Not yet recorded; these answer the remaining backlog questions on
 		// the next baseline run.

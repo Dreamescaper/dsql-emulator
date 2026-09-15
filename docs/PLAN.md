@@ -206,7 +206,7 @@ occ:
 Available predicates: `relpersistence`, `column_type`, `column_array`,
 `objtype`, `txn_kind`, `set_name`, `language_not`, `sequence_cache_min`,
 `identity_cache_min`, `cache_allow`, `remove_type`, and `rename_type`. The `since` field is reserved for version-gating a rule, and
-`rewrites` (for `CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule:
+`rewrites` are textual pre-parses for syntax libpg_query cannot read. Foreign keys carry no rule:
 they are supported, so they are simply forwarded, and they appear only as an OCC
 source.
 
@@ -257,7 +257,7 @@ fixture to keep forever.
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
 | M4 | Auth/TLS/version emulation; single DB; UTC/C collation | in progress (TLS and version done; IAM token auth pending) |
 | M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
-| M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
+| M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | done |
 | M7 | Conformance harness: golden record + emulator diff | done |
 
 ## Repository layout
@@ -271,7 +271,7 @@ internal/classify/       libpg_query AST → verdict and statement kinds
 internal/txn/            transaction state machine and limits          (M2)
 internal/conformance/    probe suite, recording, and comparison        (M7)
 internal/occ/            conflict injection/adjudication               (M5)
-internal/sysjobs/        sys schema emulation                          (M6)
+docker/init/             backing-database init, including sys.jobs   (M6)
 rules/                   embedded versioned ruleset and loader
 test/integration/        container-backed tests
 test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
@@ -280,7 +280,7 @@ test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
 ## Verification backlog
 
 Answered by baseline runs on 2026-09-15. The ruleset was reconciled to match,
-and the emulator now reproduces all 65 cases except the two deliberate M6 gaps:
+and the emulator now reproduces every recorded case:
 
 | Question | Answer |
 |----------|--------|

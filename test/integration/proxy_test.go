@@ -27,6 +27,7 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
+		postgres.WithInitScripts("../../docker/init/01-sys.sql"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -200,6 +201,26 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		if showVersion != proxy.DefaultServerVersion {
 			t.Fatalf("got server_version %q want %q", showVersion, proxy.DefaultServerVersion)
 		}
+	})
+
+	t.Run("async index reports a job id", func(t *testing.T) {
+		var jobID string
+		if err := conn.QueryRow(ctx, "CREATE INDEX ASYNC IF NOT EXISTS widget_async_idx ON widget (name)").Scan(&jobID); err != nil {
+			t.Fatalf("create index async: %v", err)
+		}
+		if jobID == "" {
+			t.Fatal("expected a job id")
+		}
+
+		var count int
+		if err := conn.QueryRow(ctx, "SELECT count(*) FROM sys.jobs").Scan(&count); err != nil {
+			t.Fatalf("query sys.jobs: %v", err)
+		}
+	})
+
+	t.Run("synchronous index is still refused", func(t *testing.T) {
+		_, err := conn.Exec(ctx, "CREATE INDEX widget_sync_idx ON widget (name)")
+		assertSQLState(t, err, "0A000")
 	})
 
 	t.Run("foreign keys are supported", func(t *testing.T) {

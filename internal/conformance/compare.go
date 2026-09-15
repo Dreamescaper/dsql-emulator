@@ -82,13 +82,10 @@ func Compare(golden, emulated RecordedCase) []Difference {
 		if want.CommandTag != got.CommandTag {
 			add(i, "command_tag", want.CommandTag, got.CommandTag, false)
 		}
-		if emulated.IgnoreRows {
-			continue
-		}
 		if !equalStrings(want.Columns, got.Columns) {
 			add(i, "columns", join(want.Columns), join(got.Columns), false)
 		}
-		if rows(want.Rows) != rows(got.Rows) {
+		if !emulated.IgnoreRows && rows(want.Rows) != rows(got.Rows) {
 			add(i, "rows", rows(want.Rows), rows(got.Rows), false)
 		}
 	}
