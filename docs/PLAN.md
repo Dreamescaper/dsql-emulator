@@ -93,10 +93,14 @@ Three stacked modes, each explicit about what it fakes:
 3. **Adjudication shim (not built).** A global write-intent registry would
    approximate lock-free conflict at commit without the blocking.
 
-True two-session conflicts are not in the conformance suite: it runs one
-connection, and a blocking PostgreSQL conflict cannot be replayed safely.
-They are covered by integration tests instead, and multi-session golden support
-is the next step for pinning DSQL's exact conflict output.
+The suite can now run a case on several connections at once, so DSQL's conflict
+output is recorded rather than assumed. Conflicting cases are marked
+`RecordOnly`: they are recorded against a real cluster but never replayed
+against the emulator, because PostgreSQL blocks before failing where DSQL is
+lock-free, and a replay would hang. Non-conflicting concurrency (disjoint
+writes, a non-key update against a referencing insert) is replayed and
+enforced. Sessions step with a fixed delay rather than barriers, and each step
+has a timeout so a blocking target cannot stall a run.
 
 ### Foreign keys are an OCC source, not a reject rule
 
@@ -343,10 +347,12 @@ and the emulator now reproduces every recorded case:
 
 Still open:
 
-- OCC behavior: the suite uses one connection, so `OC000` codes and
-  commit-time conflict outcomes are unverified. Needs concurrent-session
-  probes (M5).
-- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL` (M5).
+- The concurrency probes await their first recording: `occ_write_write`,
+  `occ_for_update_vs_write`, `occ_for_key_share_vs_delete`, and
+  `occ_fk_delete_insert` are record-only, and two non-conflicting cases are
+  enforced once recorded.
+- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`; only the
+  delete/insert and non-key-update pairs are probed so far.
 
 ## Prior art
 

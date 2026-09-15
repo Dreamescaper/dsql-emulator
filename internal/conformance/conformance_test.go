@@ -35,12 +35,20 @@ func TestDefaultSuiteIsWellFormed(t *testing.T) {
 		if c.Group == "" {
 			t.Fatalf("case %q has no group", c.Name)
 		}
-		if len(c.Steps) == 0 {
+		if len(c.Steps) == 0 && len(c.Sessions) == 0 {
 			t.Fatalf("case %q has no steps", c.Name)
+		}
+		if len(c.Steps) > 0 && len(c.Sessions) > 0 {
+			t.Fatalf("case %q mixes single-session and concurrent steps", c.Name)
 		}
 		for _, step := range c.Steps {
 			if step == "" {
 				t.Fatalf("case %q has an empty step", c.Name)
+			}
+		}
+		for i, session := range c.Sessions {
+			if len(session) == 0 {
+				t.Fatalf("case %q session %d has no steps", c.Name, i)
 			}
 		}
 	}
@@ -169,6 +177,41 @@ func TestLoadDirRejectsDuplicateCaseNames(t *testing.T) {
 	}
 	if _, err := conformance.LoadDir(dir); err == nil {
 		t.Fatal("expected an error for a duplicated case name")
+	}
+}
+
+func TestCompareConcurrentSessions(t *testing.T) {
+	golden := conformance.RecordedCase{
+		Case: conformance.Case{Name: "c", Sessions: [][]string{{"BEGIN"}, {"BEGIN", "COMMIT"}}},
+		SessionResults: [][]conformance.Observation{
+			{{Outcome: "ok", CommandTag: "BEGIN"}},
+			{{Outcome: "ok", CommandTag: "BEGIN"}, {Outcome: "error", SQLState: "40001"}},
+		},
+	}
+	emulated := golden
+
+	if diffs := conformance.Failures(conformance.Compare(golden, emulated)); len(diffs) != 0 {
+		t.Fatalf("expected no differences, got %v", diffs)
+	}
+
+	emulated.SessionResults = [][]conformance.Observation{
+		{{Outcome: "ok", CommandTag: "BEGIN"}},
+		{{Outcome: "ok", CommandTag: "BEGIN"}, {Outcome: "ok", CommandTag: "COMMIT"}},
+	}
+	diffs := conformance.Failures(conformance.Compare(golden, emulated))
+	if len(diffs) == 0 || diffs[0].Session != 1 {
+		t.Fatalf("expected a difference in session 1, got %v", diffs)
+	}
+}
+
+func TestCompareSkipsRecordOnlyCases(t *testing.T) {
+	golden := &conformance.Golden{Cases: []conformance.RecordedCase{
+		{Case: conformance.Case{Name: "conflict", RecordOnly: true}, SessionResults: [][]conformance.Observation{{{Outcome: "error"}}}},
+	}}
+	emulated := &conformance.Golden{}
+
+	if diffs := conformance.CompareSuites(golden, emulated); len(diffs) != 0 {
+		t.Fatalf("record-only cases must not be compared, got %v", diffs)
 	}
 }
 

@@ -87,8 +87,14 @@ func main() {
 		return
 	}
 
-	golden, err := conformance.RunSuite(ctx, conn, suite, func(format string, args ...any) {
-		fmt.Printf(format+"\n", args...)
+	connect := func(ctx context.Context) (*pgx.Conn, error) {
+		return pgx.Connect(ctx, dsn(*user, tokenValue, *host, *port, *database, *sslmode))
+	}
+	golden, err := conformance.RunSuite(ctx, connect, suite, conformance.Options{
+		IncludeRecordOnly: true,
+		Progress: func(format string, args ...any) {
+			fmt.Printf(format+"\n", args...)
+		},
 	})
 	golden.Target = *label
 	if err != nil {

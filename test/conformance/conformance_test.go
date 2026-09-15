@@ -27,21 +27,40 @@ const defaultGoldenDir = "golden"
 // golden record is present, checks the emulator against real DSQL behavior.
 func TestConformanceAgainstEmulator(t *testing.T) {
 	ctx := context.Background()
-	conn := startEmulator(t, ctx)
+	conn, connect := startEmulator(t, ctx)
 	suite := conformance.DefaultSuite()
 
 	var emulated *conformance.Golden
 	t.Run("records every step and cleans up", func(t *testing.T) {
-		golden, err := conformance.RunSuite(ctx, conn, suite, t.Logf)
+		golden, err := conformance.RunSuite(ctx, connect, suite, conformance.Options{Progress: t.Logf})
 		if err != nil {
 			t.Fatalf("run suite: %v", err)
 		}
 		emulated = golden
 
-		if len(golden.Cases) != len(suite.Cases) {
-			t.Fatalf("recorded %d cases, expected %d", len(golden.Cases), len(suite.Cases))
+		// Record-only cases are intentionally not replayed.
+		want := 0
+		for _, c := range suite.Cases {
+			if !c.RecordOnly {
+				want++
+			}
+		}
+		if len(golden.Cases) != want {
+			t.Fatalf("recorded %d cases, expected %d", len(golden.Cases), want)
 		}
 		for _, c := range golden.Cases {
+			if len(c.Case.Sessions) > 0 {
+				if len(c.SessionResults) != len(c.Case.Sessions) {
+					t.Fatalf("case %q recorded %d sessions for %d", c.Name, len(c.SessionResults), len(c.Case.Sessions))
+				}
+				for i, obs := range c.SessionResults {
+					if len(obs) != len(c.Case.Sessions[i]) {
+						t.Fatalf("case %q session %d recorded %d observations for %d steps",
+							c.Name, i, len(obs), len(c.Case.Sessions[i]))
+					}
+				}
+				continue
+			}
 			if len(c.Observations) != len(c.Steps) {
 				t.Fatalf("case %q recorded %d observations for %d steps", c.Name, len(c.Observations), len(c.Steps))
 			}
@@ -103,7 +122,7 @@ func TestConformanceAgainstEmulator(t *testing.T) {
 	})
 }
 
-func startEmulator(t *testing.T, ctx context.Context) *pgx.Conn {
+func startEmulator(t *testing.T, ctx context.Context) (*pgx.Conn, conformance.Connector) {
 	t.Helper()
 
 	container, err := postgres.Run(ctx, "postgres:17-alpine",
@@ -156,7 +175,11 @@ func startEmulator(t *testing.T, ctx context.Context) *pgx.Conn {
 		t.Fatalf("connect through emulator: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	return conn
+
+	connect := func(ctx context.Context) (*pgx.Conn, error) {
+		return pgx.Connect(ctx, dsn)
+	}
+	return conn, connect
 }
 
 func assertNoLeftovers(t *testing.T, ctx context.Context, conn *pgx.Conn) {

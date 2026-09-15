@@ -29,6 +29,13 @@ type Case struct {
 	// KnownGap, when set, records an accepted divergence. The case is still
 	// recorded and replayed, but its result is not enforced.
 	KnownGap string `json:"known_gap,omitempty"`
+	// Sessions, when set, gives each entry its own connection. The sessions run
+	// concurrently, each step list in order, with a fixed delay between steps.
+	Sessions [][]string `json:"sessions,omitempty"`
+	// RecordOnly cases are recorded against a real cluster but never replayed
+	// against the emulator, because it cannot reproduce them: PostgreSQL blocks
+	// on a conflicting write where DSQL is lock-free.
+	RecordOnly bool `json:"record_only,omitempty"`
 }
 
 func one(sql string) []string { return []string{sql} }
@@ -37,6 +44,8 @@ func one(sql string) []string { return []string{sql} }
 // is one request against a metered cluster.
 func setupStatements() []string {
 	return []string{
+		"DROP TABLE IF EXISTS baseline_conflict_child",
+		"DROP TABLE IF EXISTS baseline_conflict",
 		"DROP TABLE IF EXISTS baseline_child",
 		"DROP TABLE IF EXISTS baseline_parent",
 		"DROP TABLE IF EXISTS baseline_idx",
@@ -50,12 +59,21 @@ func setupStatements() []string {
 		"CREATE TABLE baseline_drop_me (id int)",
 		"CREATE TABLE baseline_implicit_bulk (id int)",
 		"INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000aa', 'seed')",
+		"CREATE TABLE baseline_conflict (id uuid PRIMARY KEY, name text NOT NULL)",
+		"CREATE TABLE baseline_conflict_child (id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES baseline_conflict(id))",
+		"INSERT INTO baseline_conflict (id, name) VALUES ('00000000-0000-0000-0000-0000000000ab', 'conflict-fk')",
+		"INSERT INTO baseline_conflict (id, name) VALUES ('00000000-0000-0000-0000-0000000000ac', 'conflict-row')",
+		"INSERT INTO baseline_conflict (id, name) VALUES ('00000000-0000-0000-0000-0000000000ad', 'disjoint-a')",
+		"INSERT INTO baseline_conflict (id, name) VALUES ('00000000-0000-0000-0000-0000000000ae', 'disjoint-b')",
+		"INSERT INTO baseline_conflict (id, name) VALUES ('00000000-0000-0000-0000-0000000000af', 'conflict-nonkey')",
 	}
 }
 
 func cleanupStatements() []string {
 	return []string{
-		// Tables that reference baseline_parent must go first.
+		// Tables that reference another table must go first.
+		"DROP TABLE IF EXISTS baseline_conflict_child",
+		"DROP TABLE IF EXISTS baseline_conflict",
 		"DROP TABLE IF EXISTS baseline_child",
 		"DROP TABLE IF EXISTS baseline_deferred",
 		"DROP TABLE IF EXISTS baseline_parent",
@@ -185,6 +203,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, environmentCases()...)
 	cases = append(cases, occCases()...)
 	cases = append(cases, queryCases()...)
+	cases = append(cases, occConflictCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -397,6 +416,50 @@ func queryCases() []Case {
 		{Name: "q_with_recursive", Group: "queries", Steps: one("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n FROM t ORDER BY 1")},
 		{Name: "q_aggregate_filter", Group: "queries", Steps: one("SELECT count(*) FILTER (WHERE name = 'seed') FROM baseline_parent")},
 		{Name: "q_merge", Group: "queries", Steps: one("MERGE INTO baseline_idx t USING baseline_parent s ON t.id = '00000000-0000-0000-0000-0000000000a1' WHEN MATCHED THEN UPDATE SET value = 'x'")},
+	}
+}
+
+// occConflictCases cover concurrency. The conflicting ones are record-only:
+// DSQL adjudicates at commit and is lock-free, while PostgreSQL blocks before
+// failing, so the emulator cannot reproduce them and a replay would hang.
+func occConflictCases() []Case {
+	return []Case{
+		{Name: "occ_write_write", Group: "occ_conflict", RecordOnly: true,
+			Note: "two writers to one row: the loser fails at commit",
+			Sessions: [][]string{
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'ww-a' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'ww-b' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
+			}},
+		{Name: "occ_for_update_vs_write", Group: "occ_conflict", RecordOnly: true,
+			Note: "FOR UPDATE versus a write",
+			Sessions: [][]string{
+				{"BEGIN", "SELECT name FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac' FOR UPDATE", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'fu-b' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
+			}},
+		{Name: "occ_for_key_share_vs_delete", Group: "occ_conflict", RecordOnly: true,
+			Note: "FOR KEY SHARE versus deleting the key",
+			Sessions: [][]string{
+				{"BEGIN", "SELECT name FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac' FOR KEY SHARE", "COMMIT"},
+				{"BEGIN", "DELETE FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
+			}},
+		{Name: "occ_fk_delete_insert", Group: "occ_conflict", RecordOnly: true,
+			Note: "delete a referenced row while another session inserts a referencing row",
+			Sessions: [][]string{
+				{"BEGIN", "DELETE FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ab'", "COMMIT"},
+				{"BEGIN", "INSERT INTO baseline_conflict_child (id, parent_id) VALUES ('00000000-0000-0000-0000-0000000000b0', '00000000-0000-0000-0000-0000000000ab')", "COMMIT"},
+			}},
+		{Name: "occ_fk_nonkey_update", Group: "occ_conflict",
+			Note: "a non-key update does not conflict with a referencing insert",
+			Sessions: [][]string{
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'nk' WHERE id = '00000000-0000-0000-0000-0000000000af'", "COMMIT"},
+				{"BEGIN", "INSERT INTO baseline_conflict_child (id, parent_id) VALUES ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000af')", "COMMIT"},
+			}},
+		{Name: "occ_disjoint_writes", Group: "occ_conflict",
+			Note: "writes to different rows do not conflict",
+			Sessions: [][]string{
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'dw-a' WHERE id = '00000000-0000-0000-0000-0000000000ad'", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_conflict SET name = 'dw-b' WHERE id = '00000000-0000-0000-0000-0000000000ae'", "COMMIT"},
+			}},
 	}
 }
 

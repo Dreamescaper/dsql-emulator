@@ -34,6 +34,36 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M5 (part 2) — concurrent sessions and OCC probes (2026-09-15)
+
+The conformance suite can now run a case on several connections at once, and
+six concurrency probes were added. DSQL's conflict output can be recorded rather
+than assumed.
+
+- `Case.Sessions` gives each entry its own connection; the sessions run
+  concurrently, each step list in order, separated by a fixed delay rather than
+  barriers. Every step has a timeout so a blocking target cannot stall a run.
+- `Case.RecordOnly` records a case against a real cluster but never replays it
+  against the emulator. Conflicting cases use it, because PostgreSQL blocks
+  where DSQL is lock-free and a replay would hang.
+- `RunSuite` takes a `Connector` instead of one connection, so it can open the
+  extra connections a case needs. The comparator is session-aware, and
+  record-only cases are skipped in both directions.
+- Probes: `occ_write_write`, `occ_for_update_vs_write`,
+  `occ_for_key_share_vs_delete`, and `occ_fk_delete_insert` (record-only), plus
+  `occ_disjoint_writes` and `occ_fk_nonkey_update`, which are replayed and
+  enforced once recorded. Conflict data lives in dedicated
+  `baseline_conflict` tables so the other probes' expectations are untouched.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `175 cases match the golden record` with the two enforced
+concurrency cases listed as unrecorded, and cleanup leaves nothing behind. New
+unit tests: `TestCompareConcurrentSessions` and
+`TestCompareSkipsRecordOnlyCases`.
+
+Pending: the six new probes need a baseline run to record DSQL's behavior.
+
 ### M3 remainder — the implicit row cap, enforced by a trigger (2026-09-15)
 
 The last known conformance gap is closed. A single autocommit statement that
@@ -698,21 +728,40 @@ with zero protocol assumptions.
 
 ## Next up
 
-### M4 — auth, TLS, and version emulation
+Every milestone is done. What remains is depth on the two areas that are still
+thin, in the order I would take them.
 
-- Terminate TLS so interception survives `sslmode=require`, instead of falling
-  back to a raw relay.
-- Accept an IAM-style token as the password.
-- Report a DSQL-like `server_version`, single database, UTC, and C collation.
+### 1. Multi-session conformance, then OCC and FK conflicts
 
-### Remaining fidelity gaps
+The suite runs one connection, so DSQL's conflict output is unverified: the
+`40001`/`OC000` wording, whether the loser fails at the statement or at commit,
+and how `FOR KEY SHARE` and foreign keys adjudicate. Integration tests cover the
+emulator's behavior, but nothing pins it to the real cluster.
 
-- Wrap implicit transactions in an explicit upstream transaction so a
-  single-statement row-cap breach is prevented (M3 remainder).
-- M6: `CREATE INDEX ASYNC` rewriting and `sys.jobs`.
-- M5: add concurrent-session probes to pin OCC behavior (`OC000`, `40001`).
-  The suite currently uses a single connection, so it needs multi-session
-  support first.
-- M3 remainder: `row_cap_implicit` pins the divergence as a known gap; preventing
-  it needs implicit transactions wrapped in an explicit upstream transaction.
+- Extend the case model with concurrent sessions, per-step timeouts, and a
+  record-only mode, because a blocking PostgreSQL conflict cannot be replayed
+  safely against the emulator.
+- Probe a write-write conflict, `SELECT ... FOR UPDATE` versus a write, and the
+  foreign-key delete-referenced-row / insert-referencing-row pair.
+- Reconcile the emulator, and settle whether `SET DEFAULT` and `CASCADE`
+  conflict like `SET NULL`.
 
+### 2. `sys.jobs` lifecycle
+
+The surface exists but is empty: `CREATE INDEX ASYNC` returns a `job_id` and
+`sys.jobs` is a table nothing writes to, with `sys.wait_for_job` a stub. Record
+a job row per async index build and make `wait_for_job` meaningful.
+
+### 3. OCC adjudicator (mode 3)
+
+Conflicts are detected by PostgreSQL, which blocks before failing; DSQL is
+lock-free. A write-intent registry would approximate commit-time conflict
+without the block. Large, and worth doing only once the behavior above is
+pinned by a recording.
+
+### Smaller items
+
+- IAM tokens are accepted but not validated; validating them means owning the
+  client authentication exchange (a SCRAM handshake on the upstream).
+- One conformance run took ~18s instead of ~1s and never reproduced; worth a
+  glance if it returns.

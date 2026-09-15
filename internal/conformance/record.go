@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,9 +27,13 @@ type Observation struct {
 }
 
 // RecordedCase pairs a probe with what the target did for each of its steps.
+// A case uses either Observations (one connection) or Sessions (one list per
+// concurrent connection).
 type RecordedCase struct {
 	Case
-	Observations []Observation `json:"observations"`
+	Observations []Observation `json:"observations,omitempty"`
+	// SessionResults holds one observation list per concurrent session.
+	SessionResults [][]Observation `json:"sessions,omitempty"`
 }
 
 // Golden is a recorded baseline.
@@ -41,6 +47,29 @@ type Golden struct {
 
 // ProgressFunc reports progress; it may be nil.
 type ProgressFunc func(format string, args ...any)
+
+// Connector opens one connection to the target. Concurrency cases need more
+// than one.
+type Connector func(ctx context.Context) (*pgx.Conn, error)
+
+// Options tune a run.
+type Options struct {
+	// IncludeRecordOnly runs cases marked RecordOnly. The recorder does; a
+	// replay against the emulator does not, because those cases cannot be
+	// reproduced there.
+	IncludeRecordOnly bool
+	// Progress reports progress; nil is fine.
+	Progress ProgressFunc
+}
+
+const (
+	// sessionStepDelay separates consecutive steps of a concurrent session so
+	// the interleaving is deterministic without needing barriers.
+	sessionStepDelay = 150 * time.Millisecond
+	// sessionStepTimeout bounds a single step, so a blocking target cannot hang
+	// the run.
+	sessionStepTimeout = 15 * time.Second
+)
 
 // Observe runs one statement and captures the outcome. It uses the extended
 // protocol, so multi-statement strings are not executed.
@@ -71,10 +100,17 @@ func Observe(ctx context.Context, conn *pgx.Conn, sql string) Observation {
 
 // RunSuite applies the schema, probes every case, and cleans up. Cleanup runs
 // even when the run fails, so a cluster is left as it was found.
-func RunSuite(ctx context.Context, conn *pgx.Conn, suite Suite, progress ProgressFunc) (*Golden, error) {
+func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options) (*Golden, error) {
+	progress := opts.Progress
 	if progress == nil {
 		progress = func(string, ...any) {}
 	}
+
+	conn, err := connect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close(context.Background())
 
 	golden := &Golden{RecordedAt: time.Now().UTC(), Suite: suite.Name}
 	if err := conn.QueryRow(ctx, "SELECT version()").Scan(&golden.ServerVersion); err != nil {
@@ -100,22 +136,86 @@ func RunSuite(ctx context.Context, conn *pgx.Conn, suite Suite, progress Progres
 
 	for _, c := range suite.Cases {
 		recorded := RecordedCase{Case: c}
-		for _, sql := range c.Steps {
-			recorded.Observations = append(recorded.Observations, Observe(ctx, conn, sql))
-		}
 
-		// Any case can leave a transaction open, or aborted. Reset so the next
-		// case starts clean; a ROLLBACK with nothing to undo is harmless.
-		if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
-			progress("reset rollback after %s failed: %v", c.Name, err)
+		switch {
+		case c.RecordOnly && !opts.IncludeRecordOnly:
+			progress("skipped  %-28s record-only", c.Name)
+			continue
+		case len(c.Sessions) > 0:
+			sessions, err := runSessions(ctx, connect, c, progress)
+			if err != nil {
+				return golden, fmt.Errorf("case %s: %w", c.Name, err)
+			}
+			recorded.SessionResults = sessions
+			progress("recorded %-28s %s", c.Name, summarizeSessions(sessions))
+		default:
+			for _, sql := range c.Steps {
+				recorded.Observations = append(recorded.Observations, Observe(ctx, conn, sql))
+			}
+			// Any case can leave a transaction open, or aborted. Reset so the
+			// next case starts clean; a ROLLBACK with nothing to undo is
+			// harmless.
+			if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
+				progress("reset rollback after %s failed: %v", c.Name, err)
+			}
+			progress("recorded %-28s %s", c.Name, summarize(recorded.Observations))
 		}
 
 		golden.Cases = append(golden.Cases, recorded)
-		progress("recorded %-28s %s", c.Name, summarize(recorded.Observations))
 	}
 
 	return golden, nil
 }
+
+// runSessions runs each session's steps on its own connection, concurrently and
+// with a fixed delay between steps so the interleaving is deterministic.
+func runSessions(ctx context.Context, connect Connector, c Case, progress ProgressFunc) ([][]Observation, error) {
+	conns := make([]*pgx.Conn, len(c.Sessions))
+	for i := range c.Sessions {
+		conn, err := connect(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("session %d connect: %w", i, err)
+		}
+		conns[i] = conn
+		defer conn.Close(context.Background())
+	}
+
+	results := make([][]Observation, len(c.Sessions))
+	var wg sync.WaitGroup
+	for i, steps := range c.Sessions {
+		wg.Add(1)
+		go func(i int, steps []string) {
+			defer wg.Done()
+			for j, sql := range steps {
+				if j > 0 {
+					time.Sleep(sessionStepDelay)
+				}
+				stepCtx, cancel := context.WithTimeout(ctx, sessionStepTimeout)
+				obs := Observe(stepCtx, conns[i], sql)
+				cancel()
+				if obs.Outcome == "error" && stepCtx.Err() != nil {
+					progress("session %d step %d timed out", i, j)
+				}
+				results[i] = append(results[i], obs)
+			}
+		}(i, steps)
+	}
+	wg.Wait()
+	return results, nil
+}
+
+func summarizeSessions(sessions [][]Observation) string {
+	out := ""
+	for i, obs := range sessions {
+		if i > 0 {
+			out += " || "
+		}
+		out += "session " + itoa(i) + ": " + summarize(obs)
+	}
+	return out
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }
 
 func failedObservation(err error) Observation {
 	obs := Observation{Outcome: "error", Message: err.Error()}

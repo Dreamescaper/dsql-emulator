@@ -8,9 +8,11 @@ import (
 
 // Difference is one field where the emulator disagreed with the golden record.
 type Difference struct {
-	Case     string
+	Case string
+	// Session is the concurrent session index; 0 for single-session cases.
+	Session  int
+	Steps    []string
 	Step     int
-	SQL      string
 	Field    string
 	Golden   string
 	Emulator string
@@ -26,74 +28,108 @@ func (d Difference) String() string {
 	if d.Advisory {
 		kind = "note"
 	}
-	return fmt.Sprintf("%s: %s step %d (%s): golden=%s emulator=%s [%s]",
-		d.Case, d.Field, d.Step, d.SQL, d.Golden, d.Emulator, kind)
+	where := ""
+	if d.Session > 0 {
+		where = fmt.Sprintf(" session %d", d.Session)
+	}
+	sql := ""
+	if d.Step < len(d.Steps) {
+		sql = d.Steps[d.Step]
+	}
+	return fmt.Sprintf("%s:%s %s step %d (%s): golden=%s emulator=%s [%s]",
+		d.Case, where, d.Field, d.Step, sql, d.Golden, d.Emulator, kind)
 }
 
 // Compare checks one recorded case against the emulator's replay of it. The
 // emulator's copy supplies step text and suite metadata, so changes to the
-// suite take effect without re-recording the baseline.
+// suite take effect without re-recording.
 func Compare(golden, emulated RecordedCase) []Difference {
+	if len(golden.SessionResults) > 0 || len(emulated.SessionResults) > 0 {
+		return compareSessions(golden, emulated)
+	}
+	return compareObservations(golden, emulated, 0, emulated.Steps, golden.Observations, emulated.Observations)
+}
+
+func compareSessions(golden, emulated RecordedCase) []Difference {
+	if len(golden.SessionResults) != len(emulated.SessionResults) {
+		return []Difference{{
+			Case:     golden.Name,
+			Field:    "session_count",
+			Golden:   fmt.Sprint(len(golden.SessionResults)),
+			Emulator: fmt.Sprint(len(emulated.SessionResults)),
+		}}
+	}
+
+	var diffs []Difference
+	for i := range golden.SessionResults {
+		var steps []string
+		if i < len(emulated.Case.Sessions) {
+			steps = emulated.Case.Sessions[i]
+		}
+		diffs = append(diffs, compareObservations(golden, emulated, i, steps,
+			golden.SessionResults[i], emulated.SessionResults[i])...)
+	}
+	return diffs
+}
+
+func compareObservations(golden, emulated RecordedCase, session int, steps []string, want, got []Observation) []Difference {
 	var diffs []Difference
 
-	step := func(i int) string {
-		if i < len(emulated.Steps) {
-			return emulated.Steps[i]
-		}
-		return ""
-	}
-	add := func(i int, field, want, got string, advisory bool) {
+	add := func(i int, field, wantValue, gotValue string, advisory bool) {
 		diffs = append(diffs, Difference{
 			Case:     golden.Name,
+			Session:  session,
+			Steps:    steps,
 			Step:     i,
-			SQL:      step(i),
 			Field:    field,
-			Golden:   want,
-			Emulator: got,
+			Golden:   wantValue,
+			Emulator: gotValue,
 			Advisory: advisory,
 			KnownGap: emulated.KnownGap,
 		})
 	}
 
-	if len(golden.Observations) != len(emulated.Observations) {
-		add(0, "step_count", fmt.Sprint(len(golden.Observations)), fmt.Sprint(len(emulated.Observations)), false)
+	if len(want) != len(got) {
+		add(0, "step_count", fmt.Sprint(len(want)), fmt.Sprint(len(got)), false)
 		return diffs
 	}
 
-	for i := range golden.Observations {
-		want, got := golden.Observations[i], emulated.Observations[i]
+	for i := range want {
+		w, g := want[i], got[i]
 
-		if want.Outcome != got.Outcome {
-			add(i, "outcome", want.Outcome, got.Outcome, false)
-			add(i, "detail", brief(want), brief(got), true)
+		if w.Outcome != g.Outcome {
+			add(i, "outcome", w.Outcome, g.Outcome, false)
+			add(i, "detail", brief(w), brief(g), true)
 			continue
 		}
 
-		if want.Outcome == "error" {
-			if want.SQLState != "" && want.SQLState != got.SQLState {
-				add(i, "sqlstate", want.SQLState, got.SQLState, false)
+		if w.Outcome == "error" {
+			if w.SQLState != "" && w.SQLState != g.SQLState {
+				add(i, "sqlstate", w.SQLState, g.SQLState, false)
 			}
-			if want.Message != got.Message {
-				add(i, "message", want.Message, got.Message, true)
+			if w.Message != g.Message {
+				add(i, "message", w.Message, g.Message, true)
 			}
 			continue
 		}
 
-		if want.CommandTag != got.CommandTag {
-			add(i, "command_tag", want.CommandTag, got.CommandTag, false)
+		if w.CommandTag != g.CommandTag {
+			add(i, "command_tag", w.CommandTag, g.CommandTag, false)
 		}
-		if !equalStrings(want.Columns, got.Columns) {
-			add(i, "columns", join(want.Columns), join(got.Columns), false)
+		if !equalStrings(w.Columns, g.Columns) {
+			add(i, "columns", join(w.Columns), join(g.Columns), false)
 		}
-		if !emulated.IgnoreRows && rows(want.Rows) != rows(got.Rows) {
-			add(i, "rows", rows(want.Rows), rows(got.Rows), false)
+		if !emulated.IgnoreRows && rows(w.Rows) != rows(g.Rows) {
+			add(i, "rows", rows(w.Rows), rows(g.Rows), false)
 		}
 	}
 
 	return diffs
 }
 
-// CompareSuites matches cases by name and reports every difference.
+// CompareSuites matches cases by name and reports every difference. Cases the
+// record marks record-only have no emulator counterpart by design and are
+// skipped.
 func CompareSuites(golden, emulated *Golden) []Difference {
 	index := make(map[string]RecordedCase, len(emulated.Cases))
 	for _, c := range emulated.Cases {
@@ -102,6 +138,9 @@ func CompareSuites(golden, emulated *Golden) []Difference {
 
 	var diffs []Difference
 	for _, want := range golden.Cases {
+		if want.RecordOnly {
+			continue
+		}
 		got, ok := index[want.Name]
 		if !ok {
 			diffs = append(diffs, Difference{
