@@ -62,6 +62,35 @@ func TestReadStartup(t *testing.T) {
 	}
 }
 
+func TestRewriteStartupSetsParametersAndOptions(t *testing.T) {
+	startup, err := ReadStartup(bytes.NewReader(func() []byte {
+		encoded, _ := (&pgproto3.StartupMessage{
+			ProtocolVersion: ProtocolVersion3,
+			Parameters:      map[string]string{"user": "admin", "options": "-c foo=1"},
+		}).Encode(nil)
+		return encoded
+	}()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	raw := RewriteStartup(startup,
+		map[string]string{"default_transaction_isolation": "repeatable read"},
+		"-c dsql.row_cap=3000")
+
+	var rewritten pgproto3.StartupMessage
+	if err := rewritten.Decode(raw[4:]); err != nil {
+		t.Fatalf("decode rewritten: %v", err)
+	}
+	if rewritten.Parameters["default_transaction_isolation"] != "repeatable read" {
+		t.Fatalf("parameter not set: %v", rewritten.Parameters)
+	}
+	want := "-c foo=1 -c dsql.row_cap=3000"
+	if got := rewritten.Parameters["options"]; got != want {
+		t.Fatalf("got options %q want %q", got, want)
+	}
+}
+
 func TestReadStartupSSLRequest(t *testing.T) {
 	raw := make([]byte, 8)
 	binary.BigEndian.PutUint32(raw[0:4], 8)

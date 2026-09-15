@@ -23,6 +23,7 @@ type testSession struct {
 	backend net.Conn
 	fe      *pgproto3.Frontend
 	be      *pgproto3.Backend
+	startup *pgproto3.StartupMessage
 }
 
 // newTestSession wires a session between two in-memory pipes and completes the
@@ -55,8 +56,7 @@ func newTestSessionWith(t *testing.T, custom *rules.Ruleset) *testSession {
 		upstream:   upstreamProxy,
 		classifier: classify.New(rs),
 		tracker: txn.New(txn.Limits{
-			DMLRows: rs.Limits.DMLRowsPerTxn,
-			MaxAge:  time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
+			MaxAge: time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
 		}),
 		serverVersion: DefaultServerVersion,
 		statements:    make(map[string]statementInfo),
@@ -88,9 +88,15 @@ func newTestSessionWith(t *testing.T, custom *rules.Ruleset) *testSession {
 		ProtocolVersion: wire.ProtocolVersion3,
 		Parameters:      map[string]string{"user": "postgres", "database": "postgres"},
 	})
-	if _, err := ts.be.ReceiveStartupMessage(); err != nil {
+	msg, err := ts.be.ReceiveStartupMessage()
+	if err != nil {
 		t.Fatalf("backend receive startup: %v", err)
 	}
+	startup, ok := msg.(*pgproto3.StartupMessage)
+	if !ok {
+		t.Fatalf("expected a startup message, got %T", msg)
+	}
+	ts.startup = startup
 	return ts
 }
 
@@ -385,59 +391,6 @@ func TestSessionRejectsDDLAndDMLInOneImplicitTransaction(t *testing.T) {
 	ts.expectRejectedQuery(t, "CREATE TABLE a (id int); INSERT INTO a VALUES (1)", "0A000")
 }
 
-func TestSessionFailsTransactionWhenRowLimitCrossed(t *testing.T) {
-	ts := newTestSession(t)
-
-	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
-
-	ts.send(t, &pgproto3.Query{String: "DELETE FROM big"})
-	if got := ts.expectBackendQuery(t); got != "DELETE FROM big" {
-		t.Fatalf("backend received %q", got)
-	}
-
-	// The statement succeeds upstream, but its result must be withheld.
-	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("DELETE 5000")})
-	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
-	if !ok {
-		t.Fatal("expected the row limit error")
-	}
-	if er.Code != "54000" {
-		t.Fatalf("got SQLSTATE %q want 54000", er.Code)
-	}
-
-	// Expect the injected abort: the statement's own ReadyForQuery, then the
-	// failing statement's error and ReadyForQuery.
-	msg := ts.receiveBackend(t)
-	q, ok := msg.(*pgproto3.Query)
-	if !ok || q.String != "SELECT 1/0" {
-		t.Fatalf("expected the abort statement at the backend, got %T", msg)
-	}
-	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
-	ts.sendBackend(t, &pgproto3.ErrorResponse{Severity: "ERROR", Code: "25P02", Message: "aborted"})
-	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'E'})
-
-	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
-	if !ok || rfq.TxStatus != 'E' {
-		t.Fatalf("expected a failed-transaction ReadyForQuery, got %T", rfq)
-	}
-
-	// The transaction is now failed until the client ends it.
-	ts.expectFailedQuery(t, "SELECT 1")
-
-	ts.send(t, &pgproto3.Query{String: "ROLLBACK"})
-	if got := ts.expectBackendQuery(t); got != "ROLLBACK" {
-		t.Fatalf("backend received %q", got)
-	}
-	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
-	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
-		t.Fatal("expected CommandComplete at the client")
-	}
-	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
-	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
-		t.Fatal("expected ReadyForQuery at the client")
-	}
-}
-
 func TestSessionCommitOnFailedTransactionRollsBack(t *testing.T) {
 	ts := newTestSession(t)
 
@@ -480,6 +433,18 @@ occ:
       tables: ["occ_t"]
       every: 1
 `
+
+func TestSessionAdvertisesRowCapUpstream(t *testing.T) {
+	ts := newTestSession(t)
+
+	options := ts.startup.Parameters["options"]
+	if !strings.Contains(options, "dsql.row_cap=3000") {
+		t.Fatalf("startup options %q do not carry the row cap", options)
+	}
+	if got := ts.startup.Parameters["default_transaction_isolation"]; got != "repeatable read" {
+		t.Fatalf("got isolation %q want repeatable read", got)
+	}
+}
 
 func TestSessionInjectsOccConflictAtCommit(t *testing.T) {
 	rs, err := rules.Load(strings.NewReader(occRuleset))

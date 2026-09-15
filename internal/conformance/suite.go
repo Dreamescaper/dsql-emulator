@@ -145,7 +145,7 @@ func DefaultSuite() Suite {
 		{Name: "rejection_outside_txn_does_not_abort", Group: "transaction", Note: "an implicit transaction is not failed by a refusal", Steps: []string{"TRUNCATE baseline_parent", "SELECT 1"}},
 		{Name: "row_cap_boundary", Group: "transaction", Note: "confirm exactly 3000 rows is allowed", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3000)", "SELECT 1", "ROLLBACK"}},
 		{Name: "row_cap_discards_rows", Group: "transaction", Note: "confirm a failed row-cap transaction leaves no rows", Steps: []string{"BEGIN", "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)", "ROLLBACK", "SELECT count(*) FROM baseline_bulk"}},
-		{Name: "row_cap_implicit", Group: "transaction", Note: "an autocommit statement that crosses the cap", Steps: one("INSERT INTO baseline_implicit_bulk SELECT generate_series(1, 3001)"), KnownGap: "M3 remainder: an implicit transaction commits before its row count is known, so the emulator cannot refuse it"},
+		{Name: "row_cap_implicit", Group: "transaction", Note: "an autocommit statement that crosses the cap", Steps: one("INSERT INTO baseline_implicit_bulk SELECT generate_series(1, 3001)")},
 
 		// Supported behavior worth pinning.
 		{Name: "select_one", Group: "supported", Steps: one("SELECT 1")},

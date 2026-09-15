@@ -157,8 +157,7 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 		upstream:   upstream,
 		classifier: p.classifier,
 		tracker: txn.New(txn.Limits{
-			DMLRows: limits.DMLRowsPerTxn,
-			MaxAge:  time.Duration(limits.TxnAgeSeconds) * time.Second,
+			MaxAge: time.Duration(limits.TxnAgeSeconds) * time.Second,
 		}),
 		tlsConfig:     p.cfg.TLS,
 		serverVersion: p.cfg.ServerVersion,

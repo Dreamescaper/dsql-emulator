@@ -14,6 +14,10 @@ design and roadmap, and `docs/PROGRESS.md` for status.
 - Go 1.27+, installed via Homebrew. If `go` is not on `PATH`:
   `export PATH="/opt/homebrew/bin:$PATH"`.
 - Docker is required for integration tests.
+- The backing database needs the init scripts in `docker/init/` (the `sys`
+  schema and the row-cap trigger). `docker-compose.yml` mounts them, and the
+  container-backed tests pass them to testcontainers. A hand-rolled PostgreSQL
+  without them will not enforce the DML row cap.
 
 ## Commands
 

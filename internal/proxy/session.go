@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net"
 	"strings"
@@ -139,7 +140,13 @@ func (s *session) handshake(ctx context.Context) (bool, error) {
 
 		raw := startup.Raw
 		if wire.IsStartup(startup.Code) {
-			raw = wire.SetStartupParameter(startup, "default_transaction_isolation", "repeatable read")
+			var options []string
+			if cap := s.classifier.Ruleset().Limits.DMLRowsPerTxn; cap > 0 {
+				options = append(options, fmt.Sprintf("-c dsql.row_cap=%d", cap))
+			}
+			raw = wire.RewriteStartup(startup,
+				map[string]string{"default_transaction_isolation": "repeatable read"},
+				options...)
 		}
 		if err := s.writeUpstream(raw); err != nil {
 			return false, err
@@ -232,18 +239,6 @@ func (s *session) pumpBackend() {
 					s.writeClient(jobIDRowDescription())
 				}
 				s.writeClient(jobIDDataRow(newJobID()))
-			}
-
-			var cc pgproto3.CommandComplete
-			if err := cc.Decode(msg.Body); err == nil {
-				s.tracker.RecordRows(txn.RowsFromCommandTag(string(cc.CommandTag)))
-				if s.rowLimitCrossed() {
-					// The statement already ran, so its success is withheld and
-					// the transaction is failed, matching DSQL.
-					s.sendError(txn.CodeProgramLimit, "transaction row limit exceeded", "dml_rows")
-					s.startRowLimitAbort()
-					continue
-				}
 			}
 		}
 
@@ -556,15 +551,6 @@ func (s *session) deferFailure(f txnFailure) {
 	s.stateMu.Unlock()
 }
 
-func (s *session) startRowLimitAbort() {
-	f := txnFailure{statement: abortTransactionQuery, status: 'E', swallow: 2}
-	if s.getInExtended() {
-		s.deferFailure(f)
-		return
-	}
-	s.beginFailure(f)
-}
-
 func (s *session) failureActive() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -753,11 +739,6 @@ func (s *session) setStateTxStatus(status byte) {
 	s.stateMu.Lock()
 	s.txStatus = status
 	s.stateMu.Unlock()
-}
-
-func (s *session) rowLimitCrossed() bool {
-	stats := s.tracker.Stats()
-	return stats.InTxn && stats.OverRows
 }
 
 func (s *session) endsTransaction(sql string) bool {

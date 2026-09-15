@@ -34,6 +34,37 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M3 remainder — the implicit row cap, enforced by a trigger (2026-09-15)
+
+The last known conformance gap is closed. A single autocommit statement that
+crosses the 3000-row cap is now refused with `54000` and commits nothing,
+matching Aurora DSQL.
+
+PostgreSQL commits a statement at `CommandComplete`, so the proxy cannot see the
+row count in time. A statement-level trigger cannot either: `GET DIAGNOSTICS
+ROW_COUNT` is 0 there (verified). The cap is therefore enforced in the backing
+database by `docker/init/02-rowcap.sql`: a row trigger counts modifications per
+transaction in a transaction-local GUC and raises `54000` on the row that
+crosses the cap. A DDL event trigger attaches it to new tables, and the script
+backfills existing ones.
+
+Consequences:
+
+- The statement that crosses the cap fails, so nothing commits; PostgreSQL's
+  aborted-transaction state then gives `25P02` and the `ROLLBACK` tag on COMMIT
+  for free. This made the proxy's `CommandComplete` row counting, its abort
+  injection, and the tracker's row-cap rule redundant, and they were removed.
+- The cap stays configuration: `limits.dml_rows_per_txn` is passed to the
+  backing server through the startup options as `-c dsql.row_cap=N`.
+- Overhead is about 1.6 µs per written row (3000 rows: 1.3 ms without the
+  trigger, 6.0 ms with it).
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `175 cases match the golden record` with **no known gaps**, and the
+integration subtest `row cap fails an autocommit statement` asserts both the
+`54000` and that zero rows were committed.
+
 ### M7 (part 6) — query conformance probes (2026-09-15)
 
 Added a 61-probe `queries` group and recorded it, bringing the record to 175

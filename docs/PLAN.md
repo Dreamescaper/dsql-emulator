@@ -156,9 +156,12 @@ transaction is its own implicit transaction.
   "Unsupported isolation level: <LEVEL>".
 - Exactly one DDL per transaction.
 - DDL and DML must be in separate transactions.
-- DML row cap per transaction (3000) — rows are summed from `CommandComplete`
-  tags. The statement that crosses the cap fails with `54000`, and its success
-  is withheld from the client.
+- DML row cap per transaction (3000). A row trigger in the backing database
+  counts modifications per transaction and raises `54000` on the statement that
+  crosses the cap, so that statement fails and nothing commits — for implicit
+  and explicit transactions alike. The emulator passes the cap through the
+  startup options as `dsql.row_cap`, and PostgreSQL's own aborted-transaction
+  state then produces `25P02` and the `ROLLBACK` tag on COMMIT.
 - Transaction age limit (30 minutes) → `54000`.
 
 Failed transactions:
@@ -170,11 +173,10 @@ Failed transactions:
   refuses later statements by itself, so no response rewriting is needed.
 - ROLLBACK always ends a failed transaction, and a client can always escape.
 
-Remaining gap: an implicit (single-statement) transaction that crosses the row
-cap is still not prevented, because the statement commits before its row count
-is known. Preventing it needs implicit transactions to be wrapped in an explicit
-upstream transaction. The `row_cap_implicit` probe records the divergence as a
-known gap so it stays visible.
+The row cap is the one rule enforced in the storage engine rather than the
+proxy, because the row count is only known while the statement runs. It needs
+the backing database's `docker/init/02-rowcap.sql`, which the compose file and
+the container-backed tests install.
 
 ## Ruleset
 
@@ -296,7 +298,7 @@ internal/classify/       libpg_query AST → verdict and statement kinds
 internal/txn/            transaction state machine and limits          (M2)
 internal/conformance/    probe suite, recording, and comparison        (M7)
 internal/occ/            conflict injection/adjudication               (M5)
-docker/init/             backing-database init, including sys.jobs   (M6)
+docker/init/             backing init: sys.jobs, row-cap trigger    (M6)
 rules/                   embedded versioned ruleset and loader
 test/integration/        container-backed tests
 test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)

@@ -17,7 +17,7 @@ var (
 )
 
 func newTracker() *txn.Tracker {
-	return txn.New(txn.Limits{DMLRows: 3000, MaxAge: 30 * time.Minute})
+	return txn.New(txn.Limits{MaxAge: 30 * time.Minute})
 }
 
 func TestAdmitAllowsDDLInSeparateTransactions(t *testing.T) {
@@ -107,7 +107,7 @@ func TestAdmitResetsAfterCommit(t *testing.T) {
 }
 
 func TestAdmitEnforcesTransactionAge(t *testing.T) {
-	tr := txn.New(txn.Limits{DMLRows: 3000, MaxAge: time.Minute})
+	tr := txn.New(txn.Limits{MaxAge: time.Minute})
 	start := time.Now()
 
 	tr.Admit(begin, start)
@@ -125,64 +125,5 @@ func TestAdmitEnforcesTransactionAge(t *testing.T) {
 
 	if _, bad := tr.Admit(rollback, start.Add(2*time.Minute)); bad {
 		t.Fatal("ROLLBACK was refused after the age limit was exceeded")
-	}
-}
-
-func TestAdmitEnforcesRowCap(t *testing.T) {
-	tr := txn.New(txn.Limits{DMLRows: 3000, MaxAge: time.Hour})
-	now := time.Now()
-
-	tr.Admit(begin, now)
-	tr.RecordRows(2000)
-	if _, bad := tr.Admit(dml, now); bad {
-		t.Fatal("statement under the row cap was rejected")
-	}
-
-	tr.RecordRows(2000)
-	if v, bad := tr.Admit(dml, now); !bad {
-		t.Fatal("statement past the row cap was allowed")
-	} else if v.Code != txn.CodeProgramLimit || v.Rule != "dml_rows" {
-		t.Fatalf("got %+v", v)
-	}
-
-	if _, bad := tr.Admit(rollback, now); bad {
-		t.Fatal("ROLLBACK was refused after the row cap was exceeded")
-	}
-	if _, bad := tr.Admit(dml, now); bad {
-		t.Fatal("new transaction after ROLLBACK was rejected")
-	}
-}
-
-func TestAdmitIgnoresRowCapOutsideExplicitTransaction(t *testing.T) {
-	tr := newTracker()
-
-	tr.Admit(dml, time.Now())
-	tr.RecordRows(10000)
-
-	if _, bad := tr.Admit(dml, time.Now()); bad {
-		t.Fatal("implicit transaction must not be blocked by a previous statement's rows")
-	}
-}
-
-func TestRowsFromCommandTag(t *testing.T) {
-	cases := []struct {
-		tag  string
-		want int64
-	}{
-		{"INSERT 0 5", 5},
-		{"INSERT 0 0", 0},
-		{"UPDATE 3", 3},
-		{"DELETE 2", 2},
-		{"MERGE 7", 7},
-		{"SELECT 5", 0},
-		{"CREATE TABLE", 0},
-		{"BEGIN", 0},
-		{"", 0},
-	}
-
-	for _, tc := range cases {
-		if got := txn.RowsFromCommandTag(tc.tag); got != tc.want {
-			t.Fatalf("RowsFromCommandTag(%q) = %d want %d", tc.tag, got, tc.want)
-		}
 	}
 }

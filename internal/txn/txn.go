@@ -5,8 +5,6 @@ package txn
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Dreamescaper/dsql-emulator/internal/classify"
@@ -18,10 +16,10 @@ const (
 	CodeProgramLimit       = "54000"
 )
 
-// Limits are the per-transaction caps, sourced from the ruleset.
+// Limits are the per-transaction caps, sourced from the ruleset. The DML row
+// cap is enforced by the backing database rather than here, so it is absent.
 type Limits struct {
-	DMLRows int
-	MaxAge  time.Duration
+	MaxAge time.Duration
 }
 
 // Violation describes a transaction rule that a batch of statements breaks.
@@ -36,8 +34,6 @@ type Stats struct {
 	InTxn    bool
 	DDLCount int
 	DMLSeen  bool
-	Rows     int64
-	OverRows bool
 }
 
 // Tracker accumulates transaction state for one session. A batch of kinds is
@@ -49,8 +45,6 @@ type Tracker struct {
 	beganAt  time.Time
 	ddlCount int
 	dmlSeen  bool
-	rows     int64
-	overRows bool
 }
 
 // New returns a Tracker enforcing limits.
@@ -82,13 +76,6 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 				Code:    CodeProgramLimit,
 				Rule:    "txn_age",
 				Message: fmt.Sprintf("transaction age of %s exceeded", t.limits.MaxAge),
-			}, true
-		}
-		if t.overRows {
-			return Violation{
-				Code:    CodeProgramLimit,
-				Rule:    "dml_rows",
-				Message: fmt.Sprintf("transaction modified more than %d rows", t.limits.DMLRows),
 			}, true
 		}
 	}
@@ -130,7 +117,6 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 
 	if !t.inTxn {
 		t.ddlCount, t.dmlSeen = 0, false
-		t.rows, t.overRows = 0, false
 	}
 	for _, k := range kinds {
 		switch k {
@@ -138,7 +124,6 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 			t.inTxn = true
 			t.beganAt = now
 			t.ddlCount, t.dmlSeen = 0, false
-			t.rows, t.overRows = 0, false
 		case classify.KindCommit, classify.KindRollback:
 			t.inTxn = false
 			t.reset()
@@ -152,52 +137,16 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 	return Violation{}, false
 }
 
-// RecordRows adds the rows affected by an executed statement. When the cap is
-// passed the transaction is flagged, and the next batch that is not a ROLLBACK
-// is refused.
-func (t *Tracker) RecordRows(n int64) {
-	if n <= 0 {
-		return
-	}
-	t.rows += n
-	if t.limits.DMLRows > 0 && t.rows > int64(t.limits.DMLRows) {
-		t.overRows = true
-	}
-}
-
 // Stats returns a snapshot of the tracker state.
 func (t *Tracker) Stats() Stats {
 	return Stats{
 		InTxn:    t.inTxn,
 		DDLCount: t.ddlCount,
 		DMLSeen:  t.dmlSeen,
-		Rows:     t.rows,
-		OverRows: t.overRows,
 	}
 }
 
 func (t *Tracker) reset() {
 	t.ddlCount = 0
 	t.dmlSeen = false
-	t.rows = 0
-	t.overRows = false
-}
-
-// RowsFromCommandTag extracts the affected-row count from a CommandComplete
-// tag, returning 0 for anything that is not DML.
-func RowsFromCommandTag(tag string) int64 {
-	fields := strings.Fields(tag)
-	if len(fields) == 0 {
-		return 0
-	}
-	switch fields[0] {
-	case "INSERT", "UPDATE", "DELETE", "MERGE":
-		n, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
-		if err != nil {
-			return 0
-		}
-		return n
-	default:
-		return 0
-	}
 }

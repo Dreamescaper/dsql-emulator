@@ -28,7 +28,9 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
-		postgres.WithInitScripts("../../docker/init/01-sys.sql"),
+		postgres.WithInitScripts(
+			"../../docker/init/01-sys.sql",
+			"../../docker/init/02-rowcap.sql"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -369,6 +371,23 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		}
 		if count != 0 {
 			t.Fatalf("rollback left %d rows behind", count)
+		}
+	})
+
+	t.Run("row cap fails an autocommit statement", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists txn_implicit (id int)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+
+		_, err := conn.Exec(ctx, "insert into txn_implicit select generate_series(1, 3001)")
+		assertSQLState(t, err, "54000")
+
+		var count int
+		if err := conn.QueryRow(ctx, "select count(*) from txn_implicit").Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("committed %d rows from a statement that crossed the cap", count)
 		}
 	})
 

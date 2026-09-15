@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 )
@@ -91,10 +92,10 @@ func ReadStartup(r io.Reader) (Startup, error) {
 	return Startup{Code: int32(binary.BigEndian.Uint32(rest[:4])), Body: rest, Raw: raw}, nil
 }
 
-// SetStartupParameter re-encodes a startup message with one parameter set.
-// If the message cannot be decoded it is returned unchanged, so malformed input
-// still reaches the server.
-func SetStartupParameter(startup Startup, key, value string) []byte {
+// RewriteStartup re-encodes a startup message with parameters set and options
+// appended to any the client already sent. If the message cannot be decoded it
+// is returned unchanged, so malformed input still reaches the server.
+func RewriteStartup(startup Startup, params map[string]string, options ...string) []byte {
 	var msg pgproto3.StartupMessage
 	if err := msg.Decode(startup.Body); err != nil {
 		return startup.Raw
@@ -102,7 +103,16 @@ func SetStartupParameter(startup Startup, key, value string) []byte {
 	if msg.Parameters == nil {
 		msg.Parameters = make(map[string]string)
 	}
-	msg.Parameters[key] = value
+	for key, value := range params {
+		msg.Parameters[key] = value
+	}
+	if len(options) > 0 {
+		all := options
+		if existing := msg.Parameters["options"]; existing != "" {
+			all = append([]string{existing}, options...)
+		}
+		msg.Parameters["options"] = strings.Join(all, " ")
+	}
 
 	encoded, err := msg.Encode(nil)
 	if err != nil {
