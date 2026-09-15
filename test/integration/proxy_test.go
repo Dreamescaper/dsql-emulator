@@ -289,6 +289,53 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		}
 	})
 
+	t.Run("constraint validation is async and recorded", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists alter_parent (id int primary key)"); err != nil {
+			t.Fatalf("create referenced table: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "create table if not exists alter_fk (id int primary key, parent_id int)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		// A constraint added by ALTER TABLE has to use NOT VALID.
+		_, err := conn.Exec(ctx, "alter table alter_fk add constraint alter_fk_parent foreign key (parent_id) references alter_parent(id)")
+		assertSQLState(t, err, "0A000")
+
+		if _, err := conn.Exec(ctx, "alter table alter_fk add constraint alter_fk_parent foreign key (parent_id) references alter_parent(id) not valid"); err != nil {
+			t.Fatalf("add not valid constraint: %v", err)
+		}
+
+		// Validation only takes the ASYNC form, and returns a job id.
+		var jobID string
+		if err := conn.QueryRow(ctx, "alter table async alter_fk validate constraint alter_fk_parent").Scan(&jobID); err != nil {
+			t.Fatalf("validate constraint: %v", err)
+		}
+		var jobType, status string
+		if err := conn.QueryRow(ctx, "select job_type, status from sys.jobs where job_id = $1", jobID).
+			Scan(&jobType, &status); err != nil {
+			t.Fatalf("the returned job id is not in sys.jobs: %v", err)
+		}
+		if status != "completed" {
+			t.Fatalf("got status %q want completed", status)
+		}
+		if _, err := conn.Exec(ctx, "call sys.wait_for_job($1)", jobID); err != nil {
+			t.Fatalf("call wait_for_job: %v", err)
+		}
+
+		// Without ASYNC it is refused.
+		_, err = conn.Exec(ctx, "alter table alter_fk validate constraint alter_fk_parent")
+		assertSQLState(t, err, "0A000")
+	})
+
+	t.Run("dropping a primary key column is not refused yet", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists alter_pk (id int primary key, a text)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		// Known gap: DSQL refuses this, the emulator does not.
+		if _, err := conn.Exec(ctx, "alter table alter_pk drop column id"); err != nil {
+			t.Fatalf("emulator refused a primary key column drop: %v", err)
+		}
+	})
+
 	t.Run("qualified index name is refused", func(t *testing.T) {
 		_, err := conn.Exec(ctx, "CREATE INDEX ASYNC public.widget_qualified_idx ON widget (name)")
 		assertSQLState(t, err, "42601")

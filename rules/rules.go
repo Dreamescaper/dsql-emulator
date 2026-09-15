@@ -57,6 +57,12 @@ type Rule struct {
 	VacuumKind []string `yaml:"vacuum_kind"`
 	// ShowName matches the parameter named by SHOW.
 	ShowName []string `yaml:"show_name"`
+	// AlterAction matches ALTER TABLE command subtypes, such as
+	// AT_ValidateConstraint.
+	AlterAction []string `yaml:"alter_action"`
+	// AddConstraintMissingNotValid matches an ALTER TABLE that adds a CHECK or
+	// FOREIGN KEY without the NOT VALID the dialect requires.
+	AddConstraintMissingNotValid bool `yaml:"add_constraint_missing_not_valid"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`

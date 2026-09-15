@@ -66,6 +66,52 @@ func unquoteIdent(s string) string {
 	return strings.ToLower(s)
 }
 
+// asyncAlter is a parsed ALTER TABLE ASYNC statement. Aurora DSQL uses the ASYNC
+// form to validate a constraint asynchronously, which PostgreSQL's parser does
+// not understand.
+type asyncAlter struct {
+	rewritten string
+	// table is the unqualified table name, or "" when it could not be read.
+	table string
+}
+
+var (
+	asyncAlterPattern     = regexp.MustCompile(`(?is)^(\s*ALTER\s+TABLE\s+)ASYNC\s+`)
+	asyncAlterNamePattern = regexp.MustCompile(
+		`(?is)^\s*ALTER\s+TABLE\s+ASYNC\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(` + ident + `)(?:\s*\.\s*(` + ident + `))?`)
+)
+
+// parseAsyncAlterTable recognises ALTER TABLE ASYNC and strips the keyword.
+func parseAsyncAlterTable(sql string) (asyncAlter, bool) {
+	if !asyncAlterPattern.MatchString(sql) {
+		return asyncAlter{}, false
+	}
+	rewritten := asyncAlterPattern.ReplaceAllString(sql, "${1}")
+	if strings.EqualFold(rewritten, sql) {
+		return asyncAlter{}, false
+	}
+
+	out := asyncAlter{rewritten: rewritten}
+	if m := asyncAlterNamePattern.FindStringSubmatch(sql); m != nil {
+		out.table = unquoteIdent(m[2])
+		if out.table == "" {
+			out.table = unquoteIdent(m[1])
+		}
+	}
+	return out, true
+}
+
+// jobIDForValidation derives the id of a constraint validation job from the
+// table it runs on, the same way the backing database does. It returns "" when
+// the table name could not be read.
+func jobIDForValidation(table string) string {
+	if table == "" {
+		return ""
+	}
+	sum := md5.Sum([]byte("validate:" + table))
+	return uuidFromMD5(sum)
+}
+
 // serverVersionNum encodes a version the way PostgreSQL's server_version_num
 // does: major*10000 + minor*100 + patch. Aurora DSQL reports 16.15 as 160015,
 // so a two-part version is read as major.patch.
@@ -102,6 +148,12 @@ func jobIDForIndex(name string) string {
 		return ""
 	}
 	sum := md5.Sum([]byte(name))
+	return uuidFromMD5(sum)
+}
+
+// uuidFromMD5 shapes a digest as a UUID, because wait_for_job converts ids to
+// one.
+func uuidFromMD5(sum [md5.Size]byte) string {
 	h := hex.EncodeToString(sum[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }

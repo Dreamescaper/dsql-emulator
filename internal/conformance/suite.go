@@ -51,12 +51,20 @@ func setupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_idx",
 		"DROP TABLE IF EXISTS baseline_bulk",
 		"DROP TABLE IF EXISTS baseline_drop_me",
+		"DROP TABLE IF EXISTS baseline_alter_fk",
+		"DROP TABLE IF EXISTS baseline_alter_pk",
+		"DROP TABLE IF EXISTS baseline_alter_big",
+		"DROP TABLE IF EXISTS baseline_alter",
 		"DROP TABLE IF EXISTS baseline_implicit_bulk",
 		"CREATE TABLE baseline_parent (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)",
 		"CREATE TABLE baseline_child (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), parent_id uuid NOT NULL REFERENCES baseline_parent(id))",
 		"CREATE TABLE baseline_idx (id uuid PRIMARY KEY, value text)",
 		"CREATE TABLE baseline_bulk (id int)",
 		"CREATE TABLE baseline_drop_me (id int)",
+		"CREATE TABLE baseline_alter (id int PRIMARY KEY, a text, b int)",
+		"CREATE TABLE baseline_alter_pk (id int PRIMARY KEY, a text)",
+		"CREATE TABLE baseline_alter_big (big bigint, note text)",
+		"CREATE TABLE baseline_alter_fk (id int PRIMARY KEY, parent_id uuid)",
 		"CREATE TABLE baseline_implicit_bulk (id int)",
 		"INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000aa', 'seed')",
 		"CREATE TABLE baseline_conflict (id uuid PRIMARY KEY, name text NOT NULL)",
@@ -72,6 +80,10 @@ func setupStatements() []string {
 func cleanupStatements() []string {
 	return []string{
 		// Tables that reference another table must go first.
+		"DROP TABLE IF EXISTS baseline_alter_fk",
+		"DROP TABLE IF EXISTS baseline_alter_pk",
+		"DROP TABLE IF EXISTS baseline_alter_big",
+		"DROP TABLE IF EXISTS baseline_alter",
 		"DROP TABLE IF EXISTS baseline_conflict_child",
 		"DROP TABLE IF EXISTS baseline_conflict",
 		"DROP TABLE IF EXISTS baseline_child",
@@ -214,6 +226,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, environmentCases()...)
 	cases = append(cases, occCases()...)
 	cases = append(cases, queryCases()...)
+	cases = append(cases, alterCases()...)
 	cases = append(cases, occConflictCases()...)
 
 	return Suite{
@@ -474,6 +487,30 @@ func occConflictCases() []Case {
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'dw-a' WHERE id = '00000000-0000-0000-0000-0000000000ad'", "COMMIT"},
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'dw-b' WHERE id = '00000000-0000-0000-0000-0000000000ae'", "COMMIT"},
 			}},
+	}
+}
+
+// alterCases cover the ALTER TABLE forms Aurora DSQL supports, including the
+// restrictions it adds: a primary key column cannot be dropped, a CHECK or
+// FOREIGN KEY added by ALTER TABLE must use NOT VALID, and validation runs
+// through the ASYNC form.
+func alterCases() []Case {
+	return []Case{
+		{Name: "alter_drop_column", Group: "alters", Steps: one("ALTER TABLE baseline_alter DROP COLUMN b")},
+		{Name: "alter_drop_pk_column", Group: "alters", Note: "DSQL does not support dropping a primary key column; PostgreSQL does", Steps: one("ALTER TABLE baseline_alter_pk DROP COLUMN id"), KnownGap: "deciding whether a column is part of the primary key needs catalog knowledge the proxy does not keep"},
+		{Name: "alter_add_column", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD COLUMN c text")},
+		{Name: "alter_add_column_storage", Group: "alters", Note: "compression is controlled with STORAGE", Steps: one("ALTER TABLE baseline_alter ADD COLUMN d text STORAGE PLAIN")},
+		{Name: "alter_set_storage", Group: "alters", Steps: one("ALTER TABLE baseline_alter ALTER COLUMN a SET STORAGE PLAIN")},
+		{Name: "alter_add_fk_not_valid", Group: "alters", Steps: one("ALTER TABLE baseline_alter_fk ADD CONSTRAINT alter_fk FOREIGN KEY (parent_id) REFERENCES baseline_parent(id) NOT VALID")},
+		{Name: "alter_add_fk_without_not_valid", Group: "alters", Note: "DSQL requires NOT VALID; PostgreSQL allows it", Steps: one("ALTER TABLE baseline_alter_fk ADD CONSTRAINT alter_fk2 FOREIGN KEY (parent_id) REFERENCES baseline_parent(id)")},
+		{Name: "alter_add_check_not_valid", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD CONSTRAINT alter_chk CHECK (a IS NOT NULL) NOT VALID")},
+		{Name: "alter_add_check_without_not_valid", Group: "alters", Note: "DSQL requires NOT VALID; PostgreSQL allows it", Steps: one("ALTER TABLE baseline_alter ADD CONSTRAINT alter_chk2 CHECK (a IS NOT NULL)")},
+		{Name: "alter_validate_constraint_async", Group: "alters", Note: "the asynchronous form that returns a job", Steps: one("ALTER TABLE ASYNC baseline_alter_fk VALIDATE CONSTRAINT alter_fk"), IgnoreRows: true},
+		{Name: "alter_validate_constraint_sync", Group: "alters", Note: "without ASYNC should be refused", Steps: one("ALTER TABLE baseline_alter_fk VALIDATE CONSTRAINT alter_fk")},
+		{Name: "alter_unique_using_index", Group: "alters", IgnoreRows: true, KnownGap: "DSQL builds the index asynchronously, so it is not yet valid when the constraint is added (55000); the emulator builds synchronously", Steps: []string{
+			"CREATE UNIQUE INDEX ASYNC baseline_alter_big_uq ON baseline_alter_big (big)",
+			"ALTER TABLE baseline_alter_big ADD CONSTRAINT baseline_alter_big_uq UNIQUE USING INDEX baseline_alter_big_uq",
+		}},
 	}
 }
 

@@ -41,6 +41,12 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.ShowName) > 0 && !contains(r.ShowName, showName(node)) {
 		return false
 	}
+	if len(r.AlterAction) > 0 && !intersects(r.AlterAction, alterActions(node)) {
+		return false
+	}
+	if r.AddConstraintMissingNotValid && !addsConstraintWithoutValidation(node) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -127,6 +133,47 @@ func lockingStrengths(node *pg_query.Node) []string {
 		}
 	}
 	return out
+}
+
+// alterActions returns the ALTER TABLE command subtypes of a statement, such as
+// "AT_ValidateConstraint".
+func alterActions(node *pg_query.Node) []string {
+	stmt := node.GetAlterTableStmt()
+	if stmt == nil {
+		return nil
+	}
+	var out []string
+	for _, node := range stmt.GetCmds() {
+		if cmd := node.GetAlterTableCmd(); cmd != nil {
+			out = append(out, cmd.GetSubtype().String())
+		}
+	}
+	return out
+}
+
+// addsConstraintWithoutValidation reports whether a statement adds a CHECK or
+// FOREIGN KEY constraint without NOT VALID, which the dialect requires for a
+// constraint added by ALTER TABLE.
+func addsConstraintWithoutValidation(node *pg_query.Node) bool {
+	stmt := node.GetAlterTableStmt()
+	if stmt == nil {
+		return false
+	}
+	for _, node := range stmt.GetCmds() {
+		cmd := node.GetAlterTableCmd()
+		if cmd == nil || cmd.GetSubtype() != pg_query.AlterTableType_AT_AddConstraint {
+			continue
+		}
+		constraint := cmd.GetDef().GetConstraint()
+		if constraint == nil || constraint.GetSkipValidation() {
+			continue
+		}
+		switch constraint.GetContype() {
+		case pg_query.ConstrType_CONSTR_CHECK, pg_query.ConstrType_CONSTR_FOREIGN:
+			return true
+		}
+	}
+	return false
 }
 
 func showName(node *pg_query.Node) string {

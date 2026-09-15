@@ -19,7 +19,7 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 195 probes, and the emulator is diffed against it. A
+real cluster answered for 207 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
 silently passing.
 
@@ -82,6 +82,7 @@ conn, err := pgx.Connect(ctx, dsn)
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them |
 | Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
+| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused |
 | OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
@@ -92,7 +93,11 @@ conn, err := pgx.Connect(ctx, dsn)
   committer without waiting. The outcome matches, the timing does not.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
-- **`sys.jobs` records index builds only.** `CREATE INDEX ASYNC` builds the
+- **Dropping a primary-key column is not refused.** DSQL answers `0A000 cannot
+  drop primary key column <name>`; deciding that needs catalog knowledge the
+  proxy does not keep, so the emulator allows the drop, which also drops the
+  key. Documented as a known gap.
+- **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
   columns, statuses, and `sys.wait_for_job` being a procedure. Two differences
   remain: the job id is a UUID derived from the index name (DSQL issues random

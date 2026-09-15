@@ -597,6 +597,32 @@ func TestSessionRejectsQualifiedIndexName(t *testing.T) {
 	}
 }
 
+func TestSessionReturnsJobIDForAsyncValidateConstraint(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.send(t, &pgproto3.Query{String: "ALTER TABLE ASYNC t VALIDATE CONSTRAINT c"})
+
+	query, ok := ts.receiveBackend(t).(*pgproto3.Query)
+	if !ok {
+		t.Fatal("expected a Query at the backend")
+	}
+	if want := "ALTER TABLE t VALIDATE CONSTRAINT c"; query.String != want {
+		t.Fatalf("backend received %q want %q", query.String, want)
+	}
+
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ALTER TABLE")})
+	if _, ok := ts.receive(t).(*pgproto3.RowDescription); !ok {
+		t.Fatal("expected a RowDescription for the job id")
+	}
+	row, ok := ts.receive(t).(*pgproto3.DataRow)
+	if !ok {
+		t.Fatal("expected a DataRow carrying the job id")
+	}
+	if got, want := string(row.Values[0]), jobIDForValidation("t"); got != want {
+		t.Fatalf("job id %q want %q", got, want)
+	}
+}
+
 func TestSessionRewritesServerVersion(t *testing.T) {
 	ts := newTestSession(t)
 

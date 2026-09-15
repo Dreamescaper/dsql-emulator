@@ -167,6 +167,20 @@ unsupported:
     code: "0A000"
     message: "TABLESAMPLE clause not supported"
 
+  # Aurora DSQL requires NOT VALID on a CHECK or FOREIGN KEY added by ALTER
+  # TABLE, and validates it through the ASYNC form.
+  - id: alter_add_constraint_requires_not_valid
+    stmt: alter_table_stmt
+    add_constraint_missing_not_valid: true
+    code: "0A000"
+    message: "unsupported ALTER TABLE ADD CONSTRAINT statement"
+
+  - id: alter_validate_requires_async
+    stmt: alter_table_stmt
+    alter_action: ["AT_ValidateConstraint"]
+    code: "0A000"
+    message: "unsupported ALTER TABLE VALIDATE CONSTRAINT statement"
+
   - id: merge
     stmt: merge_stmt
     code: "0A000"

@@ -34,6 +34,50 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Validated the recently announced dialect features (2026-09-15)
+
+Checked each feature Aurora DSQL announced recently. Recording twelve
+`ALTER TABLE` probes (record now 207 cases) produced the answers.
+
+| Announcement | Emulator |
+|---|---|
+| `ALTER TABLE ... DROP COLUMN` | Supported, matching. |
+| Indexes on expressions | Already covered (`create_index_async_expression`). |
+| `SELECT ... FOR KEY SHARE` | Already covered (`occ_for_key_share`). |
+| Character compression (`STORAGE`) | `ADD COLUMN ... STORAGE` and `SET STORAGE` both match. |
+| Foreign keys | Supported; the new `ALTER TABLE` forms are below. |
+| Partial indexes | Covered in the previous entry. |
+
+Work the recording prompted:
+
+- `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT` is DSQL-only syntax, so the
+  parser refused it with `42601`. The `ASYNC` rewrite now covers `ALTER TABLE`
+  as well as `CREATE INDEX`, and the statement is answered with the `job_id`
+  row DSQL returns.
+- The dialect requires `NOT VALID` on a `CHECK` or `FOREIGN KEY` added by
+  `ALTER TABLE`, and validates only through the `ASYNC` form. Both are refused
+  with `0A000`, from two new predicates over `AlterTableCmd` subtypes, so the
+  proxy decides them statically.
+- The job trigger now records constraint validation as well as index builds,
+  detecting the validation from `current_query()` (verified readable in the
+  trigger). It cannot over-record, because the synchronous form is refused
+  before it reaches the database, and `wait_for_job` accepts the returned id.
+
+Two divergences are documented rather than emulated:
+
+- **Dropping a primary-key column**: DSQL refuses with `0A000 cannot drop
+  primary key column <name>`. Deciding it needs catalog knowledge the proxy
+  does not keep, so the emulator performs the drop and silently loses the key.
+  Recorded as a known gap.
+- **`ADD CONSTRAINT ... UNIQUE USING INDEX` after `CREATE INDEX ASYNC`**: DSQL
+  refuses with `55000 index ... is not valid` because the build is still
+  running. The emulator builds synchronously, so the index is valid at once and
+  the constraint is added. Recorded as a known gap.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `207 cases match the golden record` with only those two known gaps.
+
 ### Fixed the image tag resolution in the publish workflow (2026-09-15)
 
 The first release, `v0.1.0`, published an image tagged only `latest`: the

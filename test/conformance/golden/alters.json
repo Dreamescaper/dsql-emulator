@@ -1,0 +1,196 @@
+{
+  "recorded_at": "2026-09-15T22:49:50.722354Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "alter_drop_column",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter DROP COLUMN b"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_drop_pk_column",
+      "group": "alters",
+      "note": "DSQL does not support dropping a primary key column; PostgreSQL does",
+      "steps": [
+        "ALTER TABLE baseline_alter_pk DROP COLUMN id"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "cannot drop primary key column id"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_column",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD COLUMN c text"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_column_storage",
+      "group": "alters",
+      "note": "compression is controlled with STORAGE",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD COLUMN d text STORAGE PLAIN"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_set_storage",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ALTER COLUMN a SET STORAGE PLAIN"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_fk_not_valid",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter_fk ADD CONSTRAINT alter_fk FOREIGN KEY (parent_id) REFERENCES baseline_parent(id) NOT VALID"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_fk_without_not_valid",
+      "group": "alters",
+      "note": "DSQL requires NOT VALID; PostgreSQL allows it",
+      "steps": [
+        "ALTER TABLE baseline_alter_fk ADD CONSTRAINT alter_fk2 FOREIGN KEY (parent_id) REFERENCES baseline_parent(id)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ADD CONSTRAINT statement"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_check_not_valid",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD CONSTRAINT alter_chk CHECK (a IS NOT NULL) NOT VALID"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_check_without_not_valid",
+      "group": "alters",
+      "note": "DSQL requires NOT VALID; PostgreSQL allows it",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD CONSTRAINT alter_chk2 CHECK (a IS NOT NULL)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ADD CONSTRAINT statement"
+        }
+      ]
+    },
+    {
+      "name": "alter_validate_constraint_async",
+      "group": "alters",
+      "note": "the asynchronous form that returns a job",
+      "steps": [
+        "ALTER TABLE ASYNC baseline_alter_fk VALIDATE CONSTRAINT alter_fk"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "wk3vg7ytsfev3hbmd2zr5cfxq4"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "alter_validate_constraint_sync",
+      "group": "alters",
+      "note": "without ASYNC should be refused",
+      "steps": [
+        "ALTER TABLE baseline_alter_fk VALIDATE CONSTRAINT alter_fk"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE VALIDATE CONSTRAINT statement"
+        }
+      ]
+    },
+    {
+      "name": "alter_unique_using_index",
+      "group": "alters",
+      "steps": [
+        "CREATE UNIQUE INDEX ASYNC baseline_alter_big_uq ON baseline_alter_big (big)",
+        "ALTER TABLE baseline_alter_big ADD CONSTRAINT baseline_alter_big_uq UNIQUE USING INDEX baseline_alter_big_uq"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "ajq6hpqiyjgghdpjwnsyfisvly"
+            ]
+          ]
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "55000",
+          "message": "index \"baseline_alter_big_uq\" is not valid"
+        }
+      ]
+    }
+  ]
+}

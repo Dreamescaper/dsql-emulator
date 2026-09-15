@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:40:58.795215Z",
+  "recorded_at": "2026-09-15T22:49:50.722354Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -36,7 +36,7 @@
           ],
           "rows": [
             [
-              "7tchvvwccbcwvi3pqsh26w34hy"
+              "hfzcxsj2szayjkstcisl57j4i4"
             ]
           ]
         }
@@ -59,7 +59,7 @@
           ],
           "rows": [
             [
-              "wdhl6e4qcng3ldncz3nexxcsoa"
+              "dzahd7wd45fcjj3rms5jkbimni"
             ]
           ]
         }
@@ -81,7 +81,7 @@
           ],
           "rows": [
             [
-              "4mn72qcfbnh7fo2ychkhzfcpvy"
+              "fv6gvm4jcfa2rb2x2q34o4jma4"
             ]
           ]
         }
@@ -103,7 +103,7 @@
           ],
           "rows": [
             [
-              "kh2nzt24uncavgfbboqbc3p7pi"
+              "ick6futcijf7jczc4dctpkb6z4"
             ]
           ]
         }
@@ -125,7 +125,7 @@
           ],
           "rows": [
             [
-              "7vm3b363fbardcn3ikv5x5kt3y"
+              "mymzjzyzzjbhnijwor37k6q4v4"
             ]
           ]
         }
@@ -147,7 +147,7 @@
           ],
           "rows": [
             [
-              "pb33ajupzvcutnlv4brxztl53i"
+              "rk5iga4qabbgbdq7w3i7tt2xny"
             ]
           ]
         }
@@ -170,7 +170,7 @@
           ],
           "rows": [
             [
-              "wmkklj2xnnewvd2ill74blkba4"
+              "reukq6frbzfmfi5t324ey2hdsu"
             ]
           ]
         }
@@ -207,7 +207,7 @@
           ],
           "rows": [
             [
-              "101"
+              "137"
             ]
           ]
         }

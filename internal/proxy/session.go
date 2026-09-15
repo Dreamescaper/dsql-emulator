@@ -98,10 +98,10 @@ type session struct {
 	// closes its batch.
 	inExtended bool
 
-	// asyncIndex, when set, is the result the emulator synthesizes for the
-	// CREATE INDEX ASYNC in flight; described records whether the client's
+	// job, when set, is the result the emulator synthesizes for the
+	// asynchronous statement in flight; described records whether the client's
 	// Describe already produced the row description.
-	asyncIndex *asyncIndexResult
+	job *jobResult
 
 	// statements maps a prepared statement name to the kinds of the statement
 	// it holds. Transaction rules are enforced when a statement is bound, not
@@ -210,7 +210,7 @@ func (s *session) pumpBackend() {
 		switch msg.Type {
 		case 'n':
 			// Describe for an async index build reports a job_id column.
-			if s.markAsyncIndexDescribed() {
+			if s.markJobDescribed() {
 				s.writeClient(jobIDRowDescription())
 				continue
 			}
@@ -234,7 +234,7 @@ func (s *session) pumpBackend() {
 				}
 				continue
 			}
-			if result := s.takeAsyncIndex(); result != nil {
+			if result := s.takeJob(); result != nil {
 				if !result.described {
 					s.writeClient(jobIDRowDescription())
 				}
@@ -324,6 +324,10 @@ func (s *session) handleQuery(msg wire.Message) {
 		s.forwardAsyncIndex(msg, query, index, false)
 		return
 	}
+	if alter, ok := parseAsyncAlterTable(query.String); ok {
+		s.forwardAsyncAlterTable(msg, query, alter, false)
+		return
+	}
 
 	if s.aborted() {
 		if s.endsTransaction(query.String) {
@@ -384,6 +388,10 @@ func (s *session) handleParse(msg wire.Message) {
 
 	if index, ok := parseAsyncIndex(parse.Query); ok {
 		s.forwardAsyncIndex(msg, parse, index, true)
+		return
+	}
+	if alter, ok := parseAsyncAlterTable(parse.Query); ok {
+		s.forwardAsyncAlterTable(msg, parse, alter, true)
 		return
 	}
 
@@ -776,6 +784,16 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 // forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
 // the PostgreSQL parser cannot read. It applies the transaction rules as DDL,
 // then forwards the rewritten statement so the index is built synchronously.
+// forwardAsyncAlterTable handles ALTER TABLE ASYNC, used by the dialect to
+// validate a constraint in the background. It is forwarded without the keyword
+// and answered with the job id the dialect returns.
+func (s *session) forwardAsyncAlterTable(msg wire.Message, frontend pgproto3.FrontendMessage, alter asyncAlter, extended bool) {
+	s.forwardAsyncJob(msg, frontend, alter.rewritten, jobIDForValidation(alter.table), extended)
+}
+
+// forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
+// PostgreSQL's parser cannot read. It applies the transaction rules as DDL,
+// then forwards the rewritten statement so the index is built synchronously.
 func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, index asyncIndex, extended bool) {
 	// Aurora DSQL puts the index in the table's schema; its grammar does not
 	// accept a qualified name, and it reports that as a syntax error.
@@ -785,6 +803,13 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 		return
 	}
 
+	s.forwardAsyncJob(msg, frontend, index.rewritten, jobIDForIndex(index.name), extended)
+}
+
+// forwardAsyncJob applies the transaction rules as DDL, then forwards a
+// rewritten asynchronous statement and arranges for a job id to be returned
+// with its result.
+func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten, jobID string, extended bool) {
 	kinds := []classify.Kind{classify.KindDDL}
 
 	if s.aborted() {
@@ -796,22 +821,21 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 		return
 	}
 
-	jobID := jobIDForIndex(index.name)
 	if jobID == "" {
-		// The name could not be read, so the derived id would not match the row
-		// the database records; hand back an opaque one instead.
+		// The job id could not be derived, so the row the database records
+		// cannot be found by it; hand back an opaque one instead.
 		jobID = newJobID()
 	}
 
 	s.stateMu.Lock()
-	s.asyncIndex = &asyncIndexResult{jobID: jobID}
+	s.job = &jobResult{jobID: jobID}
 	s.stateMu.Unlock()
 
 	switch m := frontend.(type) {
 	case *pgproto3.Query:
-		m.String = index.rewritten
+		m.String = rewritten
 	case *pgproto3.Parse:
-		m.Query = index.rewritten
+		m.Query = rewritten
 		s.statements[m.Name] = statementInfo{kinds: kinds}
 	}
 
@@ -880,27 +904,28 @@ type statementInfo struct {
 	tables []string
 }
 
-// asyncIndexResult tracks the synthesized result of an async index build.
-type asyncIndexResult struct {
+// jobResult tracks the synthesized result of an asynchronous statement, which
+// the dialect answers with a job id.
+type jobResult struct {
 	described bool
 	jobID     string
 }
 
-func (s *session) markAsyncIndexDescribed() bool {
+func (s *session) markJobDescribed() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if s.asyncIndex == nil || s.asyncIndex.described {
+	if s.job == nil || s.job.described {
 		return false
 	}
-	s.asyncIndex.described = true
+	s.job.described = true
 	return true
 }
 
-func (s *session) takeAsyncIndex() *asyncIndexResult {
+func (s *session) takeJob() *jobResult {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	result := s.asyncIndex
-	s.asyncIndex = nil
+	result := s.job
+	s.job = nil
 	return result
 }
 

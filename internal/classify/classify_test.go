@@ -74,6 +74,9 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"geometry", "SELECT line('{1,2,3}')", "unsupported_geometry", "0A000"},
 		{"tablesample", "SELECT 1 FROM t TABLESAMPLE SYSTEM (1)", "tablesample", "0A000"},
 		{"merge", "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE", "merge", "0A000"},
+		{"alter add constraint without NOT VALID", "ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES parent(id)", "alter_add_constraint_requires_not_valid", "0A000"},
+		{"alter add check without NOT VALID", "ALTER TABLE t ADD CONSTRAINT ck CHECK (a > 0)", "alter_add_constraint_requires_not_valid", "0A000"},
+		{"alter validate without ASYNC", "ALTER TABLE t VALIDATE CONSTRAINT fk", "alter_validate_requires_async", "0A000"},
 		{"show lc_collate", "SHOW lc_collate", "show_lc_collate", "42704"},
 	}
 
@@ -105,7 +108,7 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 		"CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY (CACHE 65536) PRIMARY KEY)",
 		"CREATE TABLE t (id int PRIMARY KEY, parent_id int REFERENCES parent(id))",
 		"CREATE TABLE t (id int, parent_id int REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)",
-		"ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES parent(id)",
+		"ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES parent(id) NOT VALID",
 		"CREATE SEQUENCE s CACHE 65536",
 		"CREATE SEQUENCE s2 CACHE 1",
 		"CREATE DOMAIN d AS int",
