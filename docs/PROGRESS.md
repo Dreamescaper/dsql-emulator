@@ -34,6 +34,22 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Fixed the image tag resolution in the publish workflow (2026-09-15)
+
+The first release, `v0.1.0`, published an image tagged only `latest`: the
+version tag was missing.
+
+Inside a reusable workflow `github.event_name` is the **caller's** event
+(`workflow_dispatch`), not `workflow_call`. The tag resolution branched on
+`workflow_call`, so it took the release path, found no `release` payload, and
+produced an empty tag; `latest` came from the branch's own default and was
+the only tag pushed. The log showed a single tag, which is what gave it away.
+
+Tag resolution now branches on whether an input tag was supplied, which does
+not depend on event-name semantics, and the workflow gained a
+`workflow_dispatch` with a `tag` input so an existing tag can be re-published
+without cutting a new release. `v0.1.0` was then re-published with both tags.
+
 ### Partial indexes (2026-09-15)
 
 Aurora DSQL added partial indexes, so the emulator was checked against them.

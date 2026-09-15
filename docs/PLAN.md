@@ -199,6 +199,9 @@ looked up without a round trip, and DSQL additionally records `ANALYZE` and
   `image` workflow publishes `linux/amd64` and `linux/arm64` to GHCR only when
   a release is created, using the repository's own token, and tags the image
   with the release version (for example `1.2.3`) plus `latest` for a
+  non-prerelease. It can also be dispatched with a tag to re-publish one.
+  Pushes to `main` do not publish.
+  with the release version (for example `1.2.3`) plus `latest` for a
   non-prerelease. Pushes to `main` do not publish.
 - Cut a release from the Actions tab with the `release` workflow and a
   `patch`/`minor`/`major` bump. It verifies the build and tests, computes the

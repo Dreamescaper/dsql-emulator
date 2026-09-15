@@ -7,6 +7,18 @@ name: image
 on:
   release:
     types: [published]
+  # Re-publish an existing tag, for example after fixing this workflow.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to build, for example v1.2.3
+        required: true
+        type: string
+      latest:
+        description: Also tag the image as latest
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
@@ -31,13 +43,18 @@ jobs:
       - name: Resolve the tags to publish
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "latest=${{ inputs.latest }}" >> "$GITHUB_OUTPUT"
+          # A called workflow sees the caller's event name, so decide on the
+          # input rather than on github.event_name.
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+            latest="${{ inputs.latest }}"
           else
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "latest=${{ !github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+            tag="${{ github.event.release.tag_name }}"
+            latest="${{ !github.event.release.prerelease }}"
           fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${tag} latest=${latest}"
 
       - uses: docker/setup-qemu-action@v3
 
