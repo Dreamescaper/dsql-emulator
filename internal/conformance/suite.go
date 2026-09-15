@@ -178,6 +178,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, supportedTypeCases()...)
 	cases = append(cases, unsupportedTypeCases()...)
 	cases = append(cases, enumCases()...)
+	cases = append(cases, environmentCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -283,6 +284,20 @@ func enumCases() []Case {
 			"CREATE TABLE baseline_enum_check_v (id int, m text CHECK (m IN ('sad', 'ok')))",
 			"INSERT INTO baseline_enum_check_v (id, m) VALUES (1, 'bogus')",
 		}},
+	}
+}
+
+// environmentCases pin what the server reports about itself: version,
+// database, timezone, and collation.
+func environmentCases() []Case {
+	return []Case{
+		{Name: "env_server_version", Group: "environment", Steps: one("SHOW server_version")},
+		{Name: "env_version_function", Group: "environment", Steps: one("SELECT version()"), IgnoreRows: true},
+		{Name: "env_current_database", Group: "environment", Steps: one("SELECT current_database()")},
+		{Name: "env_current_schema", Group: "environment", Steps: one("SELECT current_schema()")},
+		{Name: "env_timezone", Group: "environment", Steps: one("SHOW timezone")},
+		{Name: "env_client_encoding", Group: "environment", Steps: one("SHOW client_encoding")},
+		{Name: "env_lc_collate", Group: "environment", Steps: one("SHOW lc_collate")},
 	}
 }
 

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,7 +31,16 @@ type Config struct {
 	// Classifier decides which statements are acceptable. Defaults to the
 	// embedded Aurora DSQL ruleset.
 	Classifier *classify.Classifier
+	// TLS terminates client TLS. When nil, SSLRequest is declined and the
+	// session stays plaintext.
+	TLS *tls.Config
+	// ServerVersion is the server_version reported to clients. Defaults to
+	// DefaultServerVersion.
+	ServerVersion string
 }
+
+// DefaultServerVersion is what Aurora DSQL advertises.
+const DefaultServerVersion = "16"
 
 // Proxy relays PostgreSQL wire-protocol traffic between clients and a backing
 // PostgreSQL server. Every accepted client connection gets its own upstream
@@ -60,6 +70,9 @@ func New(cfg Config) (*Proxy, error) {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.ServerVersion == "" {
+		cfg.ServerVersion = DefaultServerVersion
 	}
 	if cfg.Classifier == nil {
 		rs, err := rules.Default()
@@ -143,12 +156,14 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 			DMLRows: limits.DMLRowsPerTxn,
 			MaxAge:  time.Duration(limits.TxnAgeSeconds) * time.Second,
 		}),
-		statements: make(map[string][]classify.Kind),
-		txStatus:   'I',
+		tlsConfig:     p.cfg.TLS,
+		serverVersion: p.cfg.ServerVersion,
+		statements:    make(map[string][]classify.Kind),
+		txStatus:      'I',
 	}
 
 	start := time.Now()
-	intercept, err := s.handshake()
+	intercept, err := s.handshake(ctx)
 	switch {
 	case err != nil:
 		log.Debug("handshake ended", "err", err)

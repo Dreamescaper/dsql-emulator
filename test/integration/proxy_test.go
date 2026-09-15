@@ -51,10 +51,16 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		t.Fatalf("container port: %v", err)
 	}
 
+	tlsConfig, err := proxy.SelfSignedTLSConfig("localhost")
+	if err != nil {
+		t.Fatalf("tls config: %v", err)
+	}
+
 	p, err := proxy.New(proxy.Config{
 		Listen:   "127.0.0.1:0",
 		Upstream: net.JoinHostPort(host, port.Port()),
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TLS:      tlsConfig,
 	})
 	if err != nil {
 		t.Fatalf("new proxy: %v", err)
@@ -151,6 +157,48 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		}
 		if got != 1 {
 			t.Fatalf("got %d want 1", got)
+		}
+	})
+
+	t.Run("tls connection is intercepted", func(t *testing.T) {
+		tlsConn, err := pgx.Connect(ctx, "postgres://postgres:postgres@"+p.Addr()+"/postgres?sslmode=require")
+		if err != nil {
+			t.Fatalf("connect with sslmode=require: %v", err)
+		}
+		defer tlsConn.Close(context.Background())
+
+		var got int
+		if err := tlsConn.QueryRow(ctx, "select 1").Scan(&got); err != nil {
+			t.Fatalf("query over tls: %v", err)
+		}
+		if got != 1 {
+			t.Fatalf("got %d want 1", got)
+		}
+
+		// Interception must survive TLS: an unsupported statement is still refused.
+		_, err = tlsConn.Exec(ctx, "TRUNCATE widget")
+		assertSQLState(t, err, "0A000")
+	})
+
+	t.Run("reports the dsql server version", func(t *testing.T) {
+		if got := conn.PgConn().ParameterStatus("server_version"); got != proxy.DefaultServerVersion {
+			t.Fatalf("parameter server_version %q want %q", got, proxy.DefaultServerVersion)
+		}
+
+		var version string
+		if err := conn.QueryRow(ctx, "select version()").Scan(&version); err != nil {
+			t.Fatalf("select version(): %v", err)
+		}
+		if version != "PostgreSQL "+proxy.DefaultServerVersion {
+			t.Fatalf("got %q want %q", version, "PostgreSQL "+proxy.DefaultServerVersion)
+		}
+
+		var showVersion string
+		if err := conn.QueryRow(ctx, "show server_version").Scan(&showVersion); err != nil {
+			t.Fatalf("show server_version: %v", err)
+		}
+		if showVersion != proxy.DefaultServerVersion {
+			t.Fatalf("got server_version %q want %q", showVersion, proxy.DefaultServerVersion)
 		}
 	})
 

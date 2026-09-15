@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -46,8 +47,9 @@ func newTestSession(t *testing.T) *testSession {
 			DMLRows: rs.Limits.DMLRowsPerTxn,
 			MaxAge:  time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
 		}),
-		statements: make(map[string][]classify.Kind),
-		txStatus:   'I',
+		serverVersion: DefaultServerVersion,
+		statements:    make(map[string][]classify.Kind),
+		txStatus:      'I',
 	}
 
 	ts := &testSession{
@@ -65,7 +67,7 @@ func newTestSession(t *testing.T) *testSession {
 	})
 
 	go func() {
-		intercept, err := s.handshake()
+		intercept, err := s.handshake(context.Background())
 		if err == nil && intercept {
 			s.run()
 		}
@@ -450,6 +452,30 @@ func TestSessionCommitOnFailedTransactionRollsBack(t *testing.T) {
 
 	// The transaction is over; the session is usable again.
 	ts.roundTrip(t, "SELECT 1", "SELECT 1", 'I')
+}
+
+func TestSessionRewritesServerVersion(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.sendBackend(t, &pgproto3.ParameterStatus{Name: "server_version", Value: "17.2"})
+	msg := ts.receive(t)
+	ps, ok := msg.(*pgproto3.ParameterStatus)
+	if !ok {
+		t.Fatalf("expected ParameterStatus, got %T", msg)
+	}
+	if ps.Value != DefaultServerVersion {
+		t.Fatalf("got server_version %q want %q", ps.Value, DefaultServerVersion)
+	}
+}
+
+func TestSessionPassesOtherParametersThrough(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.sendBackend(t, &pgproto3.ParameterStatus{Name: "client_encoding", Value: "UTF8"})
+	ps, ok := ts.receive(t).(*pgproto3.ParameterStatus)
+	if !ok || ps.Value != "UTF8" {
+		t.Fatalf("got %v want client_encoding UTF8", ps)
+	}
 }
 
 func TestSessionRejectsUnsupportedIsolation(t *testing.T) {

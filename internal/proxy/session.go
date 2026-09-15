@@ -1,9 +1,11 @@
 package proxy
 
 import (
-	"io"
+	"context"
+	"crypto/tls"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +16,10 @@ import (
 	"github.com/Dreamescaper/dsql-emulator/internal/txn"
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
 )
+
+// dsqlVersionPrefix is what DSQL's version() starts with; the rest is the
+// server_version value.
+const dsqlVersionPrefix = "PostgreSQL "
 
 // SQLSTATE and message reported for statements that arrive while a transaction
 // is already failed.
@@ -44,6 +50,12 @@ type session struct {
 	upstream   net.Conn
 	classifier *classify.Classifier
 	tracker    *txn.Tracker
+
+	// tlsConfig terminates client TLS. When nil, SSLRequest is declined with
+	// 'N' and the session stays plaintext.
+	tlsConfig *tls.Config
+	// serverVersion replaces the upstream's reported server_version.
+	serverVersion string
 
 	clientMu   sync.Mutex
 	upstreamMu sync.Mutex
@@ -76,16 +88,30 @@ type session struct {
 	fromUpstream atomic.Int64
 }
 
-// handshake relays the startup exchange. It reports whether protocol
-// interception is possible: it is not once the client negotiates TLS with the
-// upstream, because the emulator cannot see inside that session.
-func (s *session) handshake() (bool, error) {
+// handshake runs the startup exchange, terminating client TLS when asked. It
+// reports whether protocol interception is possible; only an opening message
+// the emulator does not model falls back to a raw relay.
+func (s *session) handshake(ctx context.Context) (bool, error) {
 	for {
 		startup, err := wire.ReadStartup(s.client)
 		if err != nil {
 			return false, err
 		}
 		s.fromClient.Add(int64(len(startup.Raw)))
+
+		switch startup.Code {
+		case wire.SSLRequestCode:
+			if err := s.negotiateTLS(ctx); err != nil {
+				return false, err
+			}
+			continue
+		case wire.GSSENCRequest:
+			// GSS encryption is not offered.
+			if _, err := s.client.Write([]byte{'N'}); err != nil {
+				return false, err
+			}
+			continue
+		}
 
 		raw := startup.Raw
 		if wire.IsStartup(startup.Code) {
@@ -95,27 +121,33 @@ func (s *session) handshake() (bool, error) {
 			return false, err
 		}
 
-		switch startup.Code {
-		case wire.SSLRequestCode, wire.GSSENCRequest:
-			resp := make([]byte, 1)
-			if _, err := io.ReadFull(s.upstream, resp); err != nil {
-				return false, err
-			}
-			s.fromUpstream.Add(1)
-			if _, err := s.client.Write(resp); err != nil {
-				return false, err
-			}
-			if resp[0] == 'S' {
-				s.logger.Warn("client negotiated TLS with the upstream directly; interception disabled for this connection")
-				return false, nil
-			}
-		case wire.ProtocolVersion3, wire.ProtocolVersion32:
+		if wire.IsStartup(startup.Code) {
 			return true, nil
-		default:
-			s.logger.Debug("unrecognized startup message; not intercepting", "code", startup.Code)
-			return false, nil
 		}
+		s.logger.Debug("unrecognized startup message; not intercepting", "code", startup.Code)
+		return false, nil
 	}
+}
+
+// negotiateTLS answers an SSLRequest. It accepts and wraps the client
+// connection when a certificate is configured, and declines otherwise, leaving
+// the session plaintext.
+func (s *session) negotiateTLS(ctx context.Context) error {
+	if s.tlsConfig == nil {
+		_, err := s.client.Write([]byte{'N'})
+		return err
+	}
+	if _, err := s.client.Write([]byte{'S'}); err != nil {
+		return err
+	}
+
+	tlsConn := tls.Server(s.client, s.tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return err
+	}
+	s.client = tlsConn
+	s.logger.Debug("tls established with client")
+	return nil
 }
 
 // run pumps both directions until the connection is finished.
@@ -145,6 +177,10 @@ func (s *session) pumpBackend() {
 		}
 
 		switch msg.Type {
+		case 'S':
+			if s.rewriteParameterStatus(msg) {
+				continue
+			}
 		case 'Z':
 			var rfq pgproto3.ReadyForQuery
 			if err := rfq.Decode(msg.Body); err == nil {
@@ -265,6 +301,13 @@ func (s *session) handleQuery(msg wire.Message) {
 		s.reject(v.Code, v.Message, v.Rule, false)
 		return
 	}
+	if rewritten := s.rewriteSQL(query.String); rewritten != "" {
+		query.String = rewritten
+		if encoded, err := query.Encode(nil); err == nil {
+			_ = s.writeUpstream(encoded)
+			return
+		}
+	}
 	s.forward(msg)
 }
 
@@ -305,6 +348,15 @@ func (s *session) handleParse(msg wire.Message) {
 		delete(s.statements, parse.Name)
 		s.reject(result.Verdict.Code, result.Verdict.Message, result.Verdict.RuleID, true)
 		return
+	}
+
+	if rewritten := s.rewriteSQL(parse.Query); rewritten != "" {
+		parse.Query = rewritten
+		if encoded, err := parse.Encode(nil); err == nil {
+			s.statements[parse.Name] = result.Kinds
+			_ = s.writeUpstream(encoded)
+			return
+		}
 	}
 
 	s.statements[parse.Name] = result.Kinds
@@ -519,6 +571,40 @@ func endsTransaction(kinds []classify.Kind) bool {
 		}
 	}
 	return false
+}
+
+// rewriteParameterStatus replaces the reported server_version with the one
+// Aurora DSQL advertises, and reports whether it handled the message.
+func (s *session) rewriteParameterStatus(msg wire.Message) bool {
+	if s.serverVersion == "" {
+		return false
+	}
+	var ps pgproto3.ParameterStatus
+	if err := ps.Decode(msg.Body); err != nil || ps.Name != "server_version" {
+		return false
+	}
+	ps.Value = s.serverVersion
+	encoded, err := ps.Encode(nil)
+	if err != nil {
+		return false
+	}
+	return s.writeClient(encoded) == nil
+}
+
+// rewriteSQL maps the few statements that report the server version onto an
+// equivalent that returns Aurora DSQL's value. It returns "" when the statement
+// needs no change.
+func (s *session) rewriteSQL(sql string) string {
+	key := strings.TrimSuffix(strings.TrimSpace(sql), ";")
+	key = strings.Join(strings.Fields(strings.ToLower(key)), " ")
+	switch key {
+	case "select version()":
+		return "SELECT '" + dsqlVersionPrefix + s.serverVersion + "' AS version"
+	case "show server_version":
+		return "SELECT '" + s.serverVersion + "' AS server_version"
+	default:
+		return ""
+	}
 }
 
 func (s *session) sendError(code, message, rule string) {

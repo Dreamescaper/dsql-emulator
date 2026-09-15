@@ -104,6 +104,25 @@ ERROR:  change conflicts with another transaction (OC000)
 SQLSTATE: 40001
 ```
 
+## Connection layer
+
+- **TLS termination.** The emulator answers `SSLRequest` with `S` and completes
+  the handshake itself using a certificate from `--tls-cert`/`--tls-key`, or a
+  self-signed one generated at startup. Interception therefore survives
+  `sslmode=require`, which previously could not connect at all. `sslmode=verify-full`
+  does not work against the generated certificate, because a real cluster
+  presents a CA-issued one. `--no-tls` declines and stays plaintext; `GSSENC`
+  is always declined.
+- **Version reporting.** The `server_version` parameter is rewritten to
+  `--server-version` (default `16`), and `SELECT version()` and
+  `SHOW server_version` are rewritten to return Aurora DSQL's values
+  (`PostgreSQL 16` and `16`).
+- **Still to do.** The password is forwarded to the backing server, so an IAM
+  auth token is accepted only to the extent the backing server accepts it.
+  Accepting arbitrary tokens means the emulator must own the client
+  authentication exchange instead of relaying it, and open its own upstream
+  session with configured credentials.
+
 ## Session FSM rules
 
 Enforced by parsing, not regex. A "batch" is one simple `Query` (which may hold
@@ -236,7 +255,7 @@ fixture to keep forever.
 | M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | done |
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
-| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | next |
+| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | in progress (TLS and version done; IAM token auth pending) |
 | M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
 | M7 | Conformance harness: golden record + emulator diff | done |

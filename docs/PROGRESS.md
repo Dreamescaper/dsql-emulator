@@ -34,6 +34,34 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M4 (part 1) — TLS termination and version reporting (2026-09-15)
+
+- `internal/proxy/tls.go` — self-signed certificate generation and loading from
+  `--tls-cert`/`--tls-key`.
+- `internal/proxy/session.go` — `SSLRequest` is now answered by the emulator,
+  which completes the TLS handshake and keeps intercepting, instead of falling
+  back to a raw relay. `GSSENCRequest` is declined, and `--no-tls` declines TLS.
+  This fixes a real blocker: a client using `sslmode=require` could not connect
+  through the emulator at all.
+- Version reporting: the `server_version` parameter is rewritten to
+  `--server-version` (default `16`), and `SELECT version()` and
+  `SHOW server_version` are rewritten to `PostgreSQL 16` and `16`.
+- Conformance probes added for the environment (`env_server_version`,
+  `env_version_function`, `env_current_database`, `env_current_schema`,
+  `env_timezone`, `env_client_encoding`, `env_lc_collate`) to pin the real
+  values on the next recording.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`. The integration
+suite gained `tls_connection_is_intercepted`, which connects with
+`sslmode=require`, runs a query, and confirms an unsupported statement is still
+refused over TLS, and `reports_the_dsql_server_version`, which checks the
+parameter and both rewritten statements.
+
+Deliberate limitation: the client's password is forwarded to the backing server,
+so an IAM auth token is accepted only insofar as the backing server accepts it.
+Owning the client authentication exchange is the remaining M4 item.
+
 ### M7 (part 5) — enum conformance probes (2026-09-15)
 
 Added a ten-probe `enum` group and recorded it (record now 102 cases).
