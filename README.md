@@ -93,10 +93,12 @@ conn, err := pgx.Connect(ctx, dsn)
   committer without waiting. The outcome matches, the timing does not.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
-- **Dropping a primary-key column is not refused.** DSQL answers `0A000 cannot
-  drop primary key column <name>`; deciding that needs catalog knowledge the
-  proxy does not keep, so the emulator allows the drop, which also drops the
-  key. Documented as a known gap.
+- **The primary-key-column guard reads the statement text.** DSQL refuses to
+  drop a primary-key column; the emulator enforces that in the backing database,
+  which has the catalog to check against, but an event trigger there sees only
+  the statement text, so only the single-action form is inspected. A
+  multi-action `ALTER TABLE ... DROP COLUMN a, DROP COLUMN b` is not, and can
+  still lose a key.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
   columns, statuses, and `sys.wait_for_job` being a procedure. Two differences

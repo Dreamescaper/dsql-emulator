@@ -34,6 +34,36 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Guard against dropping a primary-key column (2026-09-15)
+
+Closed the more serious of the two `ALTER TABLE` divergences: DSQL refuses to
+drop a column that is part of a primary key, and the emulator used to perform
+the drop and silently remove the key with it.
+
+A pre-flight query in the proxy would have meant making a synchronous request
+inside the streaming relay — exclusive access to the upstream, a known-idle
+point that pipelining makes unreliable, response capture, and client
+backpressure — which is a lot of hang risk to serve one check. Instead the
+guard lives in the backing database, which already has the catalog:
+`docker/init/05-alter-guard.sql` registers a `ddl_command_start` event trigger
+that reads the statement, resolves the table with `to_regclass`, and raises
+`0A000 cannot drop primary key column <name>` when the column is in
+`pg_index.indisprimary`. It fires before the drop, while the key is still there.
+
+The trigger reads statement text, because an event trigger at that point has no
+parse tree, so only the single-action form is inspected: `DROP COLUMN c`,
+`IF EXISTS`, `ONLY`, a `*`, `RESTRICT`/`CASCADE`, quoting, and schema
+qualification all work, but a multi-action `ALTER TABLE ... DROP COLUMN a, DROP
+COLUMN b` is left alone. It fails open, so it cannot refuse a statement it does
+not understand. Checked against a real database before any Go changed, and the
+`alter_drop_pk_column` probe is now enforced rather than a known gap.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `207 cases match the golden record` with one known gap left, the
+asynchronous index build. The integration subtest asserts the drop is refused
+and that the key survives.
+
 ### Validated the recently announced dialect features (2026-09-15)
 
 Checked each feature Aurora DSQL announced recently. Recording twelve

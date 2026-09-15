@@ -326,13 +326,25 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		assertSQLState(t, err, "0A000")
 	})
 
-	t.Run("dropping a primary key column is not refused yet", func(t *testing.T) {
+	t.Run("dropping a primary key column is refused", func(t *testing.T) {
 		if _, err := conn.Exec(ctx, "create table if not exists alter_pk (id int primary key, a text)"); err != nil {
 			t.Fatalf("create table: %v", err)
 		}
-		// Known gap: DSQL refuses this, the emulator does not.
-		if _, err := conn.Exec(ctx, "alter table alter_pk drop column id"); err != nil {
-			t.Fatalf("emulator refused a primary key column drop: %v", err)
+
+		_, err := conn.Exec(ctx, "alter table alter_pk drop column id")
+		assertSQLState(t, err, "0A000")
+
+		// A non-key column still drops, and the key survives the refusal.
+		if _, err := conn.Exec(ctx, "alter table alter_pk drop column a"); err != nil {
+			t.Fatalf("dropping a non-key column should work: %v", err)
+		}
+		var count int
+		if err := conn.QueryRow(ctx,
+			"select count(*) from pg_index where indrelid = 'alter_pk'::regclass and indisprimary").Scan(&count); err != nil {
+			t.Fatalf("count primary keys: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("got %d primary keys want 1; the key did not survive", count)
 		}
 	})
 

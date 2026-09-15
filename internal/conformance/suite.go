@@ -497,7 +497,7 @@ func occConflictCases() []Case {
 func alterCases() []Case {
 	return []Case{
 		{Name: "alter_drop_column", Group: "alters", Steps: one("ALTER TABLE baseline_alter DROP COLUMN b")},
-		{Name: "alter_drop_pk_column", Group: "alters", Note: "DSQL does not support dropping a primary key column; PostgreSQL does", Steps: one("ALTER TABLE baseline_alter_pk DROP COLUMN id"), KnownGap: "deciding whether a column is part of the primary key needs catalog knowledge the proxy does not keep"},
+		{Name: "alter_drop_pk_column", Group: "alters", Note: "DSQL does not support dropping a primary key column; PostgreSQL does", Steps: one("ALTER TABLE baseline_alter_pk DROP COLUMN id")},
 		{Name: "alter_add_column", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD COLUMN c text")},
 		{Name: "alter_add_column_storage", Group: "alters", Note: "compression is controlled with STORAGE", Steps: one("ALTER TABLE baseline_alter ADD COLUMN d text STORAGE PLAIN")},
 		{Name: "alter_set_storage", Group: "alters", Steps: one("ALTER TABLE baseline_alter ALTER COLUMN a SET STORAGE PLAIN")},
