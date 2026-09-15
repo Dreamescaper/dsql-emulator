@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -57,6 +58,32 @@ func unquoteIdent(s string) string {
 		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
 	}
 	return strings.ToLower(s)
+}
+
+// serverVersionNum encodes a version the way PostgreSQL's server_version_num
+// does: major*10000 + minor*100 + patch. Aurora DSQL reports 16.15 as 160015,
+// so a two-part version is read as major.patch.
+func serverVersionNum(version string) string {
+	parts := strings.SplitN(strings.TrimSpace(version), ".", 3)
+	atoi := func(s string) int {
+		n := 0
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return 0
+			}
+			n = n*10 + int(r-'0')
+		}
+		return n
+	}
+	major := atoi(parts[0])
+	minor, patch := 0, 0
+	switch len(parts) {
+	case 2:
+		patch = atoi(parts[1])
+	case 3:
+		minor, patch = atoi(parts[1]), atoi(parts[2])
+	}
+	return strconv.Itoa(major*10000 + minor*100 + patch)
 }
 
 // jobIDForIndex derives the job id both sides use. Aurora DSQL issues random

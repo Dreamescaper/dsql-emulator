@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // Difference is one field where the emulator disagreed with the golden record.
@@ -113,7 +115,9 @@ func compareObservations(golden, emulated RecordedCase, session int, steps []str
 			continue
 		}
 
-		if w.CommandTag != g.CommandTag {
+		// A SELECT tag carries the row count, so when the rows are ignored the
+		// tag that counts them is noise too.
+		if w.CommandTag != g.CommandTag && !(emulated.IgnoreRows && isRowCountTag(w.CommandTag)) {
 			add(i, "command_tag", w.CommandTag, g.CommandTag, false)
 		}
 		if !equalStrings(w.Columns, g.Columns) {
@@ -183,6 +187,16 @@ func Failures(diffs []Difference) []Difference {
 		}
 	}
 	return out
+}
+
+// isRowCountTag reports whether a command tag is just "SELECT <n>".
+func isRowCountTag(tag string) bool {
+	rest, ok := strings.CutPrefix(tag, "SELECT ")
+	if !ok || rest == "" {
+		return false
+	}
+	_, err := strconv.Atoi(rest)
+	return err == nil
 }
 
 func brief(o Observation) string {

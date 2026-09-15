@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T21:28:52.869551Z",
+  "recorded_at": "2026-09-15T22:22:10.414979Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -42,6 +42,69 @@
           "rows": [
             [
               "PostgreSQL 16"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_server_version_setting",
+      "group": "environment",
+      "steps": [
+        "SELECT current_setting('server_version')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "current_setting"
+          ],
+          "rows": [
+            [
+              "16.15"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_server_version_num",
+      "group": "environment",
+      "steps": [
+        "SELECT current_setting('server_version_num')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "current_setting"
+          ],
+          "rows": [
+            [
+              "160015"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_show_server_version_num",
+      "group": "environment",
+      "steps": [
+        "SHOW server_version_num"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SHOW",
+          "columns": [
+            "server_version_num"
+          ],
+          "rows": [
+            [
+              "160015"
             ]
           ]
         }

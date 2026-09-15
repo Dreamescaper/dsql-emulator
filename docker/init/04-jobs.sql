@@ -16,16 +16,18 @@ CREATE OR REPLACE FUNCTION dsql_internal.record_index_job() RETURNS event_trigge
 LANGUAGE plpgsql AS $$
 DECLARE
     cmd record;
-    index_name text;
 BEGIN
     FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() WHERE command_tag = 'CREATE INDEX' LOOP
-        SELECT relname INTO index_name FROM pg_class WHERE oid = cmd.objid;
-        IF index_name IS NOT NULL THEN
-            INSERT INTO sys.jobs (job_id, job_type, status)
-            VALUES (md5(index_name), 'INDEX_BUILD', 'COMPLETED')
-            ON CONFLICT (job_id) DO UPDATE
-                SET status = EXCLUDED.status, created_at = now();
-        END IF;
+        -- class_id 1259 is pg_class, the catalog DSQL reports for an index.
+        INSERT INTO sys.jobs
+            (job_id, status, details, job_type, class_id, object_id, object_name, start_time, update_time)
+        SELECT md5(c.relname), 'completed', NULL, 'INDEX_BUILD', 1259, c.oid,
+               n.nspname || '.' || c.relname, now(), now()
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.oid = cmd.objid
+        ON CONFLICT (job_id) DO UPDATE
+            SET status = EXCLUDED.status, update_time = EXCLUDED.update_time;
     END LOOP;
 END $$;
 

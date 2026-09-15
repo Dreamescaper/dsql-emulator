@@ -215,6 +215,21 @@ func TestCompareSkipsRecordOnlyCases(t *testing.T) {
 	}
 }
 
+func TestCompareIgnoresRowCountTagWhenRowsAreIgnored(t *testing.T) {
+	golden := conformance.RecordedCase{
+		Case:         conformance.Case{Name: "c", Steps: []string{"SELECT * FROM sys.jobs"}, IgnoreRows: true},
+		Observations: []conformance.Observation{{Outcome: "ok", CommandTag: "SELECT 7", Columns: []string{"job_id"}}},
+	}
+	emulated := conformance.RecordedCase{
+		Case:         conformance.Case{Name: "c", Steps: []string{"SELECT * FROM sys.jobs"}, IgnoreRows: true},
+		Observations: []conformance.Observation{{Outcome: "ok", CommandTag: "SELECT 1", Columns: []string{"job_id"}}},
+	}
+
+	if diffs := conformance.Failures(conformance.Compare(golden, emulated)); len(diffs) != 0 {
+		t.Fatalf("expected the row-count tag to be ignored, got %v", diffs)
+	}
+}
+
 func TestUnrecorded(t *testing.T) {
 	golden := &conformance.Golden{Cases: []conformance.RecordedCase{caseInGroup("a", "g")}}
 	emulated := &conformance.Golden{Cases: []conformance.RecordedCase{

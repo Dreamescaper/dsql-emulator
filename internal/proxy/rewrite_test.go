@@ -51,6 +51,23 @@ func TestRewriteAsyncIndexLeavesOtherStatementsAlone(t *testing.T) {
 	}
 }
 
+func TestServerVersionNum(t *testing.T) {
+	// Aurora DSQL reports server_version 16.15 and server_version_num 160015.
+	cases := map[string]string{
+		"16.15":   "160015",
+		"16":      "160000",
+		"16.1.2":  "160102",
+		"17.4.1":  "170401",
+		"":        "0",
+		"garbage": "0",
+	}
+	for version, want := range cases {
+		if got := serverVersionNum(version); got != want {
+			t.Fatalf("serverVersionNum(%q) = %q want %q", version, got, want)
+		}
+	}
+}
+
 func TestJobIDForIndex(t *testing.T) {
 	// The backing database derives the id the same way, with md5, so this value
 	// is what `select md5('baseline_idx_value_async')` returns.

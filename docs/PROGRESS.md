@@ -34,6 +34,42 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Reconciled against DSQL's real sys.jobs and version paths (2026-09-15)
+
+Recording the four probes that were waiting on a cluster paid off; every one
+taught something.
+
+- **`sys.jobs` has nine columns**, not the four the emulator guessed:
+  `job_id, status, details, job_type, class_id, object_id, object_name,
+  start_time, update_time`, with lower-case statuses (`completed`), `job_type`
+  `INDEX_BUILD`, `class_id` 1259 (the `pg_class` catalog), and `object_name`
+  schema-qualified. The table and the recording trigger now match, so
+  `SELECT * FROM sys.jobs` agrees.
+- **DSQL also records `ANALYZE` and `DROP` jobs.** The emulator records only
+  index builds; the difference is documented rather than emulated.
+- **`sys.wait_for_job` is a procedure**, so `SELECT sys.wait_for_job(...)` fails
+  with `42809 ... is a procedure` on both DSQL and the emulator, because
+  PostgreSQL generates that error itself once the routine is a procedure. The
+  emulator's stub function became a procedure to match.
+- **`CALL` with a subquery argument is refused** on both with `0A000 cannot use
+  subquery in CALL argument` — again PostgreSQL's own message.
+- **The version paths are `16.15` and `160015`.** `current_setting` forms and
+  `SHOW server_version_num` are now rewritten, so no version probe leaks the
+  backing engine any more. `serverVersionNum` encodes `16.15` as `160015`, the
+  way DSQL does.
+
+A comparison fix was needed too: `IgnoreRows` skipped the rows of
+`SELECT *`-style probes but not the command tag that counts them, and DSQL's
+count grows as its job history accumulates. A row-count tag is now ignored
+alongside the rows.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `187 cases match the golden record` with one new probe unrecorded
+and no known gaps. The integration subtest now asserts the recorded job's shape
+(`completed`, `INDEX_BUILD`, `public.widget_async_idx`), that `CALL` works, and
+that a `SELECT` against the procedure fails with `42809`.
+
 ### sys.jobs lifecycle for async index builds (2026-09-15)
 
 `CREATE INDEX ASYNC` now leaves a completed `INDEX_BUILD` job in `sys.jobs`, and

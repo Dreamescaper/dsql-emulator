@@ -829,6 +829,15 @@ func (s *session) rewriteSQL(sql string) string {
 		s.pendingCommandTag = "SHOW"
 		s.stateMu.Unlock()
 		return "SELECT '" + s.serverVersion + "' AS server_version"
+	case "select current_setting('server_version')":
+		return "SELECT '" + s.serverVersion + "' AS current_setting"
+	case "select current_setting('server_version_num')":
+		return "SELECT '" + serverVersionNum(s.serverVersion) + "' AS current_setting"
+	case "show server_version_num":
+		s.stateMu.Lock()
+		s.pendingCommandTag = "SHOW"
+		s.stateMu.Unlock()
+		return "SELECT '" + serverVersionNum(s.serverVersion) + "' AS server_version_num"
 	default:
 		return ""
 	}

@@ -225,23 +225,33 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 			t.Fatal("expected a job id")
 		}
 
-		// The id handed to the client has to be findable in sys.jobs.
-		var jobType, status string
-		if err := conn.QueryRow(ctx, "SELECT job_type, status FROM sys.jobs WHERE job_id = $1", jobID).
-			Scan(&jobType, &status); err != nil {
+		// The id handed to the client has to be findable in sys.jobs, with the
+		// shape Aurora DSQL reports.
+		var jobType, status, objectName string
+		if err := conn.QueryRow(ctx,
+			"SELECT job_type, status, object_name FROM sys.jobs WHERE job_id = $1", jobID).
+			Scan(&jobType, &status, &objectName); err != nil {
 			t.Fatalf("the returned job id is not in sys.jobs: %v", err)
 		}
-		if jobType != "INDEX_BUILD" || status != "COMPLETED" {
-			t.Fatalf("got job_type %q status %q want INDEX_BUILD/COMPLETED", jobType, status)
+		if jobType != "INDEX_BUILD" || status != "completed" {
+			t.Fatalf("got job_type %q status %q want INDEX_BUILD/completed", jobType, status)
+		}
+		if objectName != "public.widget_async_idx" {
+			t.Fatalf("got object_name %q want public.widget_async_idx", objectName)
 		}
 
-		var waited string
-		if err := conn.QueryRow(ctx, "SELECT sys.wait_for_job($1)", jobID).Scan(&waited); err != nil {
-			t.Fatalf("wait_for_job: %v", err)
+		// wait_for_job is a procedure, so CALL is how it is used, and a SELECT
+		// against it fails the way it does on DSQL.
+		if _, err := conn.Exec(ctx, "CALL sys.wait_for_job($1)", jobID); err != nil {
+			t.Fatalf("call wait_for_job: %v", err)
 		}
-		if waited != "COMPLETED" {
-			t.Fatalf("wait_for_job returned %q want COMPLETED", waited)
-		}
+		// The same call with a literal, which is how it reads without a job
+		// lying around, still resolves the procedure.
+		_, err = conn.Exec(ctx, "CALL sys.wait_for_job('no-such-job')")
+		assertSQLState(t, err, "22023")
+		var ignored string
+		err := conn.QueryRow(ctx, "SELECT sys.wait_for_job($1)", jobID).Scan(&ignored)
+		assertSQLState(t, err, "42809")
 
 		// The index really exists.
 		if _, err := conn.Exec(ctx, "drop index widget_async_idx"); err != nil {

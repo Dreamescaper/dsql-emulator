@@ -92,16 +92,18 @@ conn, err := pgx.Connect(ctx, dsn)
   committer without waiting. The outcome matches, the timing does not.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
-- **`sys.jobs` is a stand-in.** `CREATE INDEX ASYNC` builds the index
-  synchronously and records a completed `INDEX_BUILD` job whose id is derived
-  from the index name (DSQL issues random ids), so the id handed back can be
-  looked up. The table shape and `sys.wait_for_job` are the emulator's own,
-  not DSQL's, and two probes are waiting on a recording to pin them. A
-  `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists returns an
-  id with no row, because no build happened.
-- **The reported version leaks on some paths.** `SELECT version()` and
-  `SHOW server_version` are rewritten; `current_setting('server_version')`
-  and `server_version_num` report the backing engine.
+- **`sys.jobs` records index builds only.** `CREATE INDEX ASYNC` builds the
+  index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
+  columns, statuses, and `sys.wait_for_job` being a procedure. Two differences
+  remain: the job id is derived from the index name (DSQL issues random ids) so
+  the id handed back can be looked up, and DSQL also records `ANALYZE` and
+  `DROP` jobs. A `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already
+  exists returns an id with no row, because no build happened.
+- **The reported version leaks on unusual paths.** `version()`,
+  `SHOW server_version`, `current_setting('server_version')`,
+  `current_setting('server_version_num')`, and `SHOW server_version_num` are
+  rewritten to DSQL's values. The rewrites match whole statements, so a version
+  read another way still reports the backing engine.
 - **Rejection wording is approximate.** The SQLSTATE is the contract;
   messages mirror DSQL's meaning and drift.
 - **No control plane.** Cluster creation, IAM and tagging are out of scope;

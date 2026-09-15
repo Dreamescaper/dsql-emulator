@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T21:28:52.869551Z",
+  "recorded_at": "2026-09-15T22:22:10.414979Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -36,7 +36,7 @@
           ],
           "rows": [
             [
-              "ddpyv3u7zzhlllw22q6ajhccge"
+              "4pb6kouml5cqljcv7vwa7iqem4"
             ]
           ]
         }
@@ -58,9 +58,419 @@
           ],
           "rows": [
             [
-              "61"
+              "32"
             ]
           ]
+        }
+      ]
+    },
+    {
+      "name": "sys_jobs_columns",
+      "group": "index",
+      "note": "pin the real sys.jobs shape",
+      "steps": [
+        "SELECT * FROM sys.jobs"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 32",
+          "columns": [
+            "job_id",
+            "status",
+            "details",
+            "job_type",
+            "class_id",
+            "object_id",
+            "object_name",
+            "start_time",
+            "update_time"
+          ],
+          "rows": [
+            [
+              "yoeqoh5bcjgw7kcmwihktdbtgq",
+              "completed",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26872",
+              "NULL",
+              "2026-09-15T22:19:40Z",
+              "2026-09-15T22:19:42Z"
+            ],
+            [
+              "mj5kbz2mkvdj7gycc3gpwukima",
+              "completed",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26903",
+              "NULL",
+              "2026-09-15T22:19:40Z",
+              "2026-09-15T22:19:42Z"
+            ],
+            [
+              "jis6pu657bhwpcwgnyvlqkvwze",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26872",
+              "NULL",
+              "2026-09-15T22:19:44Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "7nagnusjwfbufevax3qpb72slm",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26889",
+              "NULL",
+              "2026-09-15T22:19:46Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "7ijoqsflyjhojcqr3ytokflnza",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26878",
+              "NULL",
+              "2026-09-15T22:19:47Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "ioyarwoqjbbbxdlq3jmnnfux44",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26897",
+              "NULL",
+              "2026-09-15T22:19:48Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "ndp3e4d2nveylnpth2nbbxfjli",
+              "completed",
+              "relation \"public.baseline_idx\" does not exist",
+              "INDEX_BUILD",
+              "1259",
+              "26937",
+              "NULL",
+              "2026-09-15T22:19:48Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "465p52svvnb73a6sl6yoybyv4m",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26945",
+              "NULL",
+              "2026-09-15T22:19:49Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "fs27nycd5rbuzih7lhyxjwgnqe",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26894",
+              "NULL",
+              "2026-09-15T22:20:00Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "zn3qm2rzi5cqta32mv6t4jld7y",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26903",
+              "NULL",
+              "2026-09-15T22:20:03Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "mdney2kdurh65d5vnex2xd3oju",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26908",
+              "NULL",
+              "2026-09-15T22:20:08Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "phh27cs4e5ay7krxd7tu3mpgk4",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26908",
+              "NULL",
+              "2026-09-15T22:20:09Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "bflk2h6isva77nbp2c7ahufuqa",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26903",
+              "NULL",
+              "2026-09-15T22:20:09Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "gaet5ayuujgfviwh3rurgo7tv4",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26878",
+              "NULL",
+              "2026-09-15T22:20:09Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "q6cnit7gnjgi3milvaxcg7kc2y",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26927",
+              "NULL",
+              "2026-09-15T22:20:09Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "lrbzozl6w5cltbzpbvocavbuju",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26872",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "wrmaaqtcqnax7a2f2s36ttljxi",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26937",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "ih3kpzg65ffv3nwjp42yohok2i",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26889",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "axflf72jajbqzaj6rrnwxoggae",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26894",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "srzkd7gt5vgy7ohovahexhwlnu",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26900",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "gxteo2dvxjhatgwwyma47sm2fi",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26939",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "c2z7h56n4zf4riuurbrnh6q774",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26945",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "usll54ixibfmdf5phvupkabkba",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26948",
+              "NULL",
+              "2026-09-15T22:20:10Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "optfcy6fbneqjch6v265qc3vki",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26954",
+              "NULL",
+              "2026-09-15T22:20:11Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "gtespvunlnhxpj32tvcyo5lpgy",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26957",
+              "NULL",
+              "2026-09-15T22:20:11Z",
+              "2026-09-15T22:20:42Z"
+            ],
+            [
+              "e5i4fsvxxrajjnoor5u6osdhza",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26961",
+              "NULL",
+              "2026-09-15T22:20:11Z",
+              "2026-09-15T22:20:41Z"
+            ],
+            [
+              "zbnnco4m5zcjleeuz5wznl7jcy",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26965",
+              "public.baseline_parent",
+              "2026-09-15T22:22:11Z",
+              "NULL"
+            ],
+            [
+              "3s72qh3scjgslnd3pgljav6liy",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26996",
+              "public.baseline_conflict",
+              "2026-09-15T22:22:12Z",
+              "NULL"
+            ],
+            [
+              "tmxn2hirojht3nt62ngixew4ii",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26982",
+              "public.baseline_idx",
+              "2026-09-15T22:22:18Z",
+              "NULL"
+            ],
+            [
+              "pnrnfehbyffdjef36trxppfltu",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "26971",
+              "public.baseline_child",
+              "2026-09-15T22:22:18Z",
+              "NULL"
+            ],
+            [
+              "scqfjqiv2fdvdcdhtu3exbmm7e",
+              "submitted",
+              "NULL",
+              "DROP",
+              "1259",
+              "26990",
+              "NULL",
+              "2026-09-15T22:22:19Z",
+              "NULL"
+            ],
+            [
+              "4pb6kouml5cqljcv7vwa7iqem4",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27030",
+              "public.baseline_idx_value_async",
+              "2026-09-15T22:22:19Z",
+              "NULL"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sys_wait_for_job",
+      "group": "index",
+      "note": "pin the real wait_for_job contract",
+      "steps": [
+        "SELECT sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42809",
+          "message": "sys.wait_for_job(text) is a procedure"
+        }
+      ]
+    },
+    {
+      "name": "sys_call_wait_for_job",
+      "group": "index",
+      "note": "wait_for_job is a procedure on DSQL",
+      "steps": [
+        "CALL sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "cannot use subquery in CALL argument"
         }
       ]
     }

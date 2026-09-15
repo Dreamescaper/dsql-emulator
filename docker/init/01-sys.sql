@@ -5,24 +5,27 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE IF NOT EXISTS sys.jobs (
     job_id text PRIMARY KEY,
-    job_type text NOT NULL,
     status text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
+    details text,
+    job_type text NOT NULL,
+    class_id oid NOT NULL,
+    object_id oid NOT NULL,
+    object_name text,
+    start_time timestamptz NOT NULL DEFAULT now(),
+    update_time timestamptz
 );
 
--- Index builds are recorded by dsql_internal.record_index_job. The emulator
--- builds indexes synchronously, so a job is already complete by the time it is
--- visible; this reports its status, and rejects an id it does not know.
-CREATE OR REPLACE FUNCTION sys.wait_for_job(job_id text)
-RETURNS text
+-- Aurora DSQL exposes this as a procedure, so calling it in a SELECT fails the
+-- same way there. The emulator builds synchronously, so a completed job is
+-- already in sys.jobs and there is nothing to wait for.
+CREATE OR REPLACE PROCEDURE sys.wait_for_job(p_job_id text)
 LANGUAGE plpgsql
 AS $$
 DECLARE
     job_status text;
 BEGIN
-    SELECT status INTO job_status FROM sys.jobs WHERE sys.jobs.job_id = wait_for_job.job_id;
+    SELECT status INTO job_status FROM sys.jobs WHERE sys.jobs.job_id = p_job_id;
     IF job_status IS NULL THEN
-        RAISE EXCEPTION 'unknown job %', wait_for_job.job_id USING ERRCODE = '22023';
+        RAISE EXCEPTION 'unknown job %', p_job_id USING ERRCODE = '22023';
     END IF;
-    RETURN job_status;
 END $$;

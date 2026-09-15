@@ -151,9 +151,10 @@ SQLSTATE: 40001
   `--server-version` (default `16.15`, what the cluster reports), and
   `SELECT version()` and `SHOW server_version` are rewritten to Aurora DSQL's
   values: `PostgreSQL 16` and `16.15`, the latter with the `SHOW` command tag.
-  The rewrites are exact-match, so other paths still report the backing engine:
-  `current_setting('server_version')`, `server_version_num`, and `version()`
-  inside a larger expression all leak it. Two probes record that as a known gap.
+  `current_setting('server_version')`, `current_setting('server_version_num')`,
+  and `SHOW server_version_num` are rewritten too; a version read some other way
+  still reports the backing engine, and the rewrites match whole statements
+  only.
 - **Backing engine version.** PostgreSQL 16, not the latest. The backing version
   is invisible on the rewritten paths, but the dialect is not: a newer engine
   accepts syntax Aurora DSQL rejects, turning "DSQL fails" into "emulator
@@ -176,10 +177,12 @@ same rules as the test suite with no extra setup.
 
 `sys.jobs` records an `INDEX_BUILD` job for every `CREATE INDEX ASYNC`, because
 an event trigger registered for `CREATE INDEX` fires for explicit index
-creation but not for the index a `CREATE TABLE` makes for a key. The job id is
-`md5(index name)` on both sides, so the id the emulator returns can be looked
-up without a round trip; DSQL's own ids are random, and its table shape and
-`sys.wait_for_job` contract are not pinned yet.
+creation but not for the index a `CREATE TABLE` makes for a key. Its columns,
+lower-case statuses, and `sys.wait_for_job` being a procedure match what the
+recording shows. Two deliberate differences remain: the job id is
+`md5(index name)` on both sides rather than random, so the id handed back can be
+looked up without a round trip, and DSQL additionally records `ANALYZE` and
+`DROP` jobs, which the emulator does not.
 
 - `DSQL_PORT` (default 5432) and `DSQL_PG_PORT` (default 5433) move the two
   listeners. `POSTGRES_USER`, `POSTGRES_DB`, and `POSTGRES_HOST_AUTH_METHOD`
