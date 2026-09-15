@@ -24,7 +24,7 @@ import (
 func TestPgxRoundTripThroughProxy(t *testing.T) {
 	ctx := context.Background()
 
-	pg, err := postgres.Run(ctx, "postgres:17-alpine",
+	pg, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
@@ -426,7 +426,7 @@ func assertSQLState(t *testing.T, err error, want string) {
 func TestTokenAuthThroughProxy(t *testing.T) {
 	ctx := context.Background()
 
-	container, err := postgres.Run(ctx, "postgres:17-alpine",
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithInitScripts("../../docker/init/01-sys.sql"),

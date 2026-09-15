@@ -151,6 +151,15 @@ SQLSTATE: 40001
   `--server-version` (default `16.15`, what the cluster reports), and
   `SELECT version()` and `SHOW server_version` are rewritten to Aurora DSQL's
   values: `PostgreSQL 16` and `16.15`, the latter with the `SHOW` command tag.
+  The rewrites are exact-match, so other paths still report the backing engine:
+  `current_setting('server_version')`, `server_version_num`, and `version()`
+  inside a larger expression all leak it. Two probes record that as a known gap.
+- **Backing engine version.** PostgreSQL 16, not the latest. The backing version
+  is invisible on the rewritten paths, but the dialect is not: a newer engine
+  accepts syntax Aurora DSQL rejects, turning "DSQL fails" into "emulator
+  passes". 16 is the generation DSQL's dialect follows, and it still has
+  everything the emulator needs (`GROUP BY DISTINCT`, deferrable foreign keys,
+  generated identity, event triggers, PL/pgSQL).
 - **Still to do.** The password is forwarded to the backing server, so an IAM
   auth token is accepted only to the extent the backing server accepts it.
   Accepting arbitrary tokens means the emulator must own the client
@@ -171,7 +180,9 @@ suite with no extra setup.
 - Readiness: the emulator logs `proxy listening`, and the image has a
   `pg_isready` healthcheck on 5432.
 - Build and publish with `make docker-build` and `make docker-push`
-  (`IMAGE`/`TAG`, default `ghcr.io/dreamescaper/dsql-emulator:latest`).
+  (`IMAGE`/`TAG`, default `ghcr.io/dreamescaper/dsql-emulator:latest`). The
+  `image` workflow publishes `linux/amd64` and `linux/arm64` to GHCR on `main`
+  and version tags, using the repository's own token.
 
 With testcontainers-go:
 

@@ -34,6 +34,26 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Backing engine set to PostgreSQL 16 (2026-09-15)
+
+Switched the backing database from 17 to 16 in the Dockerfile, compose file,
+and both test suites. 17 was an arbitrary early default, never justified
+against the alternatives.
+
+- 16 is the generation Aurora DSQL's dialect follows, so the backend is less
+  likely to accept syntax DSQL rejects. 18 would be worse: newer than both
+  DSQL's dialect and the parser, so it would silently turn "DSQL fails" into
+  "emulator passes".
+- Matching 16 does not fully align the reported version: the rewrites are
+  exact-match, so `current_setting('server_version')`, `server_version_num`,
+  and `version()` inside a larger expression still leak the backing engine. Two
+  `environment` probes record that as a known gap.
+- The image workflow now builds `linux/amd64` and `linux/arm64`. The first
+  publish succeeded but was amd64-only, which Apple Silicon cannot pull.
+
+Verification: `go test -tags integration ./test/...` passes on 16, and the
+conformance run reports `181 cases match the golden record`.
+
 ### Published container image (2026-09-15)
 
 Added `Dockerfile` and `docker/entrypoint.sh`, which bundle PostgreSQL with the

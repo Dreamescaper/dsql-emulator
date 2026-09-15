@@ -11,7 +11,7 @@ RUN go build -trimpath -o /out/dsql-emu ./cmd/dsql-emu
 
 # One container serves the whole emulator: PostgreSQL with the init scripts the
 # emulator needs, plus the proxy in front of it.
-FROM postgres:17-alpine
+FROM postgres:16-alpine
 
 COPY --from=build /out/dsql-emu /usr/local/bin/dsql-emu
 COPY docker/init/ /docker-entrypoint-initdb.d/

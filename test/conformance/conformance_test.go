@@ -125,7 +125,7 @@ func TestConformanceAgainstEmulator(t *testing.T) {
 func startEmulator(t *testing.T, ctx context.Context) (*pgx.Conn, conformance.Connector) {
 	t.Helper()
 
-	container, err := postgres.Run(ctx, "postgres:17-alpine",
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),

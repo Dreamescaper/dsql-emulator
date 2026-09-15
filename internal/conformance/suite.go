@@ -318,6 +318,8 @@ func environmentCases() []Case {
 	return []Case{
 		{Name: "env_server_version", Group: "environment", Steps: one("SHOW server_version")},
 		{Name: "env_version_function", Group: "environment", Steps: one("SELECT version()"), IgnoreRows: true},
+		{Name: "env_server_version_setting", Group: "environment", Steps: one("SELECT current_setting('server_version')"), KnownGap: "only server_version and the exact version()/SHOW statements are rewritten, so this reports the backing engine"},
+		{Name: "env_server_version_num", Group: "environment", Steps: one("SELECT current_setting('server_version_num')"), KnownGap: "only server_version and the exact version()/SHOW statements are rewritten, so this reports the backing engine"},
 		{Name: "env_current_database", Group: "environment", Steps: one("SELECT current_database()")},
 		{Name: "env_current_schema", Group: "environment", Steps: one("SELECT current_schema()")},
 		{Name: "env_timezone", Group: "environment", Steps: one("SHOW timezone")},
