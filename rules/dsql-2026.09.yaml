@@ -86,6 +86,23 @@ unsupported:
     code: "0A000"
     message: "unsupported object in DROP statement"
 
+  # Full-text search and geometric functions rely on types DSQL does not have.
+  # Text search fails as a missing configuration; the geometric types are
+  # reported as unsupported datatypes.
+  - id: unsupported_text_search
+    stmt: select_stmt
+    function:
+      ["to_tsvector", "to_tsquery", "plainto_tsquery", "phraseto_tsquery",
+       "websearch_to_tsquery", "ts_rank", "ts_headline", "setweight"]
+    code: "42704"
+    message: 'text search configuration "english" does not exist'
+
+  - id: unsupported_geometry
+    stmt: select_stmt
+    function: ["line", "circle", "polygon", "box", "path", "lseg", "center", "radius"]
+    code: "0A000"
+    message: "datatype not supported"
+
   # DSQL detects conflicts at commit for FOR UPDATE and FOR KEY SHARE, but does
   # not offer FOR SHARE or FOR NO KEY UPDATE.
   - id: unsupported_locking
@@ -140,8 +157,26 @@ unsupported:
 
   - id: vacuum
     stmt: vacuum_stmt
+    vacuum_kind: ["VACUUM"]
     code: "0A000"
     message: "unsupported VACUUM statement"
+
+  - id: tablesample
+    stmt: select_stmt
+    contains: ["RangeTableSample"]
+    code: "0A000"
+    message: "TABLESAMPLE clause not supported"
+
+  - id: merge
+    stmt: merge_stmt
+    code: "0A000"
+    message: "unsupported statement type: MERGE"
+
+  - id: show_lc_collate
+    stmt: variable_show_stmt
+    show_name: ["lc_collate"]
+    code: "42704"
+    message: 'unrecognized configuration parameter "lc_collate"' 
 
   - id: listen
     stmt: listen_stmt

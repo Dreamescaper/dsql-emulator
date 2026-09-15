@@ -39,8 +39,12 @@ type Config struct {
 	ServerVersion string
 }
 
-// DefaultServerVersion is what Aurora DSQL advertises.
-const DefaultServerVersion = "16"
+// DefaultServerVersion is what Aurora DSQL advertises as server_version, and
+// DefaultVersionFunction is what its version() returns.
+const (
+	DefaultServerVersion   = "16.15"
+	DefaultVersionFunction = "PostgreSQL 16"
+)
 
 // Proxy relays PostgreSQL wire-protocol traffic between clients and a backing
 // PostgreSQL server. Every accepted client connection gets its own upstream

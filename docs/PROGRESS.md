@@ -34,6 +34,40 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M7 (part 6) — query conformance probes (2026-09-15)
+
+Added a 61-probe `queries` group and recorded it, bringing the record to 175
+cases. It covers the documented `SELECT` clauses, joins and set operations, and
+common patterns the documentation does not mention (CTEs, scalar/`IN`/`EXISTS`/
+correlated subqueries, `unnest`, `generate_series`, aggregates, `RETURNING`,
+upsert, `INSERT ... SELECT`, `EXPLAIN`, `ANALYZE`, `SET CONSTRAINTS`), plus a
+handful of patterns and operators drawn from Npgsql's query baseline: full-text
+search, geometric functions, `MERGE`, and `TABLESAMPLE`.
+
+The first comparison found nine divergences, all fixed against the record:
+
+- `ANALYZE` was refused because it shares a node with `VACUUM`; a `vacuum_kind`
+  predicate now separates them.
+- Text-search functions fail as `42704` (missing configuration), not `0A000`.
+- `MERGE` and `TABLESAMPLE` are refused with `0A000`; a generic `contains`
+  predicate matches nested nodes such as `RangeTableSample`.
+- Six probes returned rows in an order DSQL and PostgreSQL disagree on; they now
+  carry `ORDER BY` so the comparison is deterministic.
+- DSQL reports `server_version` `16.15` and `version()` `PostgreSQL 16`, and
+  `SHOW server_version` carries the `SHOW` command tag, so the rewrites and
+  default constants were corrected. `SHOW lc_collate` is refused with `42704`.
+
+Also confirmed: `GROUP BY ALL`, which the documentation lists, is actually
+rejected by DSQL with `42601` — matching the emulator's parse failure — and the
+constructs the docs omit (`GROUPING SETS`, `ROLLUP`, `CUBE`, `LATERAL`,
+`DISTINCT ON`, `ROW_NUMBER`, `LAG`, `WITH RECURSIVE`, aggregate `FILTER`) are
+supported by both.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `175 cases match the golden record` with `row_cap_implicit` the only
+known gap, and `--cleanup-only` confirms no `baseline_` objects remain.
+
 ### M4 (part 2) — IAM token acceptance (2026-09-15)
 
 DSQL clients present a short-lived IAM token as the password. The emulator

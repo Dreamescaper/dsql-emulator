@@ -191,8 +191,8 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		if err := conn.QueryRow(ctx, "select version()").Scan(&version); err != nil {
 			t.Fatalf("select version(): %v", err)
 		}
-		if version != "PostgreSQL "+proxy.DefaultServerVersion {
-			t.Fatalf("got %q want %q", version, "PostgreSQL "+proxy.DefaultServerVersion)
+		if version != proxy.DefaultVersionFunction {
+			t.Fatalf("got %q want %q", version, proxy.DefaultVersionFunction)
 		}
 
 		var showVersion string

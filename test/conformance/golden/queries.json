@@ -1,0 +1,1319 @@
+{
+  "recorded_at": "2026-09-15T21:06:21.397701Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "q_where",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent WHERE name = 'seed'"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_distinct",
+      "group": "queries",
+      "steps": [
+        "SELECT DISTINCT name FROM baseline_parent ORDER BY name"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_group_by",
+      "group": "queries",
+      "steps": [
+        "SELECT name, count(*) FROM baseline_parent GROUP BY name ORDER BY name"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name",
+            "count"
+          ],
+          "rows": [
+            [
+              "seed",
+              "1"
+            ],
+            [
+              "tx",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_group_by_all",
+      "group": "queries",
+      "note": "documented DSQL extension",
+      "steps": [
+        "SELECT name, count(*) FROM baseline_parent GROUP BY ALL"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42601",
+          "message": "syntax error at end of input"
+        }
+      ]
+    },
+    {
+      "name": "q_group_by_distinct",
+      "group": "queries",
+      "steps": [
+        "SELECT name, count(*) FROM baseline_parent GROUP BY DISTINCT name ORDER BY name"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name",
+            "count"
+          ],
+          "rows": [
+            [
+              "seed",
+              "1"
+            ],
+            [
+              "tx",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_having",
+      "group": "queries",
+      "steps": [
+        "SELECT name, count(*) FROM baseline_parent GROUP BY name HAVING count(*) \u003e= 0 ORDER BY name"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name",
+            "count"
+          ],
+          "rows": [
+            [
+              "seed",
+              "1"
+            ],
+            [
+              "tx",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_order_nulls",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent ORDER BY name ASC NULLS FIRST"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_order_desc_nulls_last",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent ORDER BY name DESC NULLS LAST"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "tx"
+            ],
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_limit",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent LIMIT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_window_rank",
+      "group": "queries",
+      "steps": [
+        "SELECT name, RANK() OVER (PARTITION BY name ORDER BY name) FROM baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name",
+            "rank"
+          ],
+          "rows": [
+            [
+              "seed",
+              "1"
+            ],
+            [
+              "tx",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_inner_join",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p INNER JOIN baseline_child c ON c.parent_id = p.id"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_left_join",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p LEFT JOIN baseline_child c ON c.parent_id = p.id ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_right_join",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p RIGHT JOIN baseline_child c ON c.parent_id = p.id"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_full_join",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p FULL JOIN baseline_child c ON c.parent_id = p.id ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_cross_join",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p CROSS JOIN baseline_child c ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_union",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent UNION SELECT name FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_union_all",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent UNION ALL SELECT name FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 4",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_intersect",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent INTERSECT SELECT name FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_except",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent EXCEPT SELECT name FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 0",
+          "columns": [
+            "name"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_cte",
+      "group": "queries",
+      "steps": [
+        "WITH x AS (SELECT name FROM baseline_parent) SELECT name FROM x"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_cte_multiple",
+      "group": "queries",
+      "steps": [
+        "WITH a AS (SELECT 1 AS n), b AS (SELECT n FROM a) SELECT n FROM b"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "n"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_subquery_scalar",
+      "group": "queries",
+      "steps": [
+        "SELECT (SELECT count(*) FROM baseline_parent)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_subquery_in",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent WHERE id IN (SELECT parent_id FROM baseline_child)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_subquery_exists",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p WHERE EXISTS (SELECT 1 FROM baseline_child c WHERE c.parent_id = p.id)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_subquery_correlated",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p WHERE p.name = (SELECT q.name FROM baseline_parent q WHERE q.id = p.id) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_unnest",
+      "group": "queries",
+      "steps": [
+        "SELECT unnest(string_to_array('a,b,c', ',')) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "unnest"
+          ],
+          "rows": [
+            [
+              "a"
+            ],
+            [
+              "b"
+            ],
+            [
+              "c"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_array_runtime",
+      "group": "queries",
+      "steps": [
+        "SELECT string_to_array('1,2,3', ',')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "string_to_array"
+          ],
+          "rows": [
+            [
+              "[1 2 3]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_generate_series",
+      "group": "queries",
+      "steps": [
+        "SELECT * FROM generate_series(1, 3) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "generate_series"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_case",
+      "group": "queries",
+      "steps": [
+        "SELECT CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "case"
+          ],
+          "rows": [
+            [
+              "yes"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_coalesce_nullif",
+      "group": "queries",
+      "steps": [
+        "SELECT coalesce(NULL, 'x'), nullif(1, 2)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "coalesce",
+            "nullif"
+          ],
+          "rows": [
+            [
+              "x",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_cast",
+      "group": "queries",
+      "steps": [
+        "SELECT '1'::int + 1, 1::text"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?",
+            "text"
+          ],
+          "rows": [
+            [
+              "2",
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_string_ops",
+      "group": "queries",
+      "steps": [
+        "SELECT 'a' || 'b', upper('a'), lower('A'), length('abc')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?",
+            "upper",
+            "lower",
+            "length"
+          ],
+          "rows": [
+            [
+              "ab",
+              "A",
+              "a",
+              "3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_aggregates",
+      "group": "queries",
+      "steps": [
+        "SELECT count(*), count(DISTINCT name), min(name), max(name) FROM baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count",
+            "count",
+            "min",
+            "max"
+          ],
+          "rows": [
+            [
+              "2",
+              "2",
+              "seed",
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_between",
+      "group": "queries",
+      "steps": [
+        "SELECT 1 WHERE 2 BETWEEN 1 AND 3"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_is_distinct_from",
+      "group": "queries",
+      "steps": [
+        "SELECT 1 IS DISTINCT FROM 2"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "true"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_insert_returning",
+      "group": "queries",
+      "steps": [
+        "INSERT INTO baseline_idx (id, value) VALUES ('00000000-0000-0000-0000-0000000000a1', 'v1') RETURNING value"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1",
+          "columns": [
+            "value"
+          ],
+          "rows": [
+            [
+              "v1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_upsert",
+      "group": "queries",
+      "steps": [
+        "INSERT INTO baseline_idx (id, value) VALUES ('00000000-0000-0000-0000-0000000000a1', 'v2') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1"
+        }
+      ]
+    },
+    {
+      "name": "q_insert_select",
+      "group": "queries",
+      "steps": [
+        "INSERT INTO baseline_bulk SELECT generate_series(1, 3)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 3"
+        }
+      ]
+    },
+    {
+      "name": "q_update_returning",
+      "group": "queries",
+      "steps": [
+        "UPDATE baseline_idx SET value = 'v3' WHERE id = '00000000-0000-0000-0000-0000000000a1' RETURNING value"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "UPDATE 1",
+          "columns": [
+            "value"
+          ],
+          "rows": [
+            [
+              "v3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_delete_returning",
+      "group": "queries",
+      "steps": [
+        "DELETE FROM baseline_idx WHERE id = '00000000-0000-0000-0000-0000000000a1' RETURNING value"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "DELETE 1",
+          "columns": [
+            "value"
+          ],
+          "rows": [
+            [
+              "v3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_delete_using",
+      "group": "queries",
+      "steps": [
+        "DELETE FROM baseline_bulk USING baseline_parent WHERE baseline_bulk.id = 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "DELETE 1"
+        }
+      ]
+    },
+    {
+      "name": "q_explain",
+      "group": "queries",
+      "steps": [
+        "EXPLAIN SELECT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "EXPLAIN",
+          "columns": [
+            "QUERY PLAN"
+          ],
+          "rows": [
+            [
+              "Result  (cost=0.00..0.01 rows=1 width=4)"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_analyze",
+      "group": "queries",
+      "steps": [
+        "ANALYZE baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ANALYZE"
+        }
+      ]
+    },
+    {
+      "name": "q_set_constraints",
+      "group": "queries",
+      "steps": [
+        "BEGIN",
+        "SET CONSTRAINTS ALL DEFERRED",
+        "COMMIT"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SET CONSTRAINTS"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "COMMIT"
+        }
+      ]
+    },
+    {
+      "name": "q_fulltext_to_tsvector",
+      "group": "queries",
+      "steps": [
+        "SELECT to_tsvector('english', 'hello world')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "text search configuration \"english\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "q_fulltext_to_tsquery",
+      "group": "queries",
+      "steps": [
+        "SELECT to_tsquery('english', 'hello \u0026 world')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "text search configuration \"english\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "q_fulltext_websearch",
+      "group": "queries",
+      "steps": [
+        "SELECT websearch_to_tsquery('english', 'hello world')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "text search configuration \"english\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "q_fulltext_match",
+      "group": "queries",
+      "steps": [
+        "SELECT 1 WHERE to_tsvector('english', 'a') @@ to_tsquery('english', 'a')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "text search configuration \"english\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "q_geom_line",
+      "group": "queries",
+      "steps": [
+        "SELECT line('{1,2,3}')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype line not supported"
+        }
+      ]
+    },
+    {
+      "name": "q_geom_circle",
+      "group": "queries",
+      "steps": [
+        "SELECT circle('\u003c(0,0),1\u003e'::text)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype circle not supported"
+        }
+      ]
+    },
+    {
+      "name": "q_grouping_sets",
+      "group": "queries",
+      "steps": [
+        "SELECT count(*) FROM baseline_parent GROUP BY GROUPING SETS ((name), ()) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_rollup",
+      "group": "queries",
+      "steps": [
+        "SELECT count(*) FROM baseline_parent GROUP BY ROLLUP (name) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_cube",
+      "group": "queries",
+      "steps": [
+        "SELECT count(*) FROM baseline_parent GROUP BY CUBE (name) ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_lateral",
+      "group": "queries",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p CROSS JOIN LATERAL (SELECT count(*) FROM baseline_child c WHERE c.parent_id = p.id) AS x ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_tablesample",
+      "group": "queries",
+      "steps": [
+        "SELECT name FROM baseline_parent TABLESAMPLE SYSTEM (1)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "TABLESAMPLE clause not supported"
+        }
+      ]
+    },
+    {
+      "name": "q_distinct_on",
+      "group": "queries",
+      "steps": [
+        "SELECT DISTINCT ON (name) name FROM baseline_parent ORDER BY name"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "name"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "tx"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_window_row_number",
+      "group": "queries",
+      "steps": [
+        "SELECT ROW_NUMBER() OVER (ORDER BY name) FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "row_number"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_window_lag",
+      "group": "queries",
+      "steps": [
+        "SELECT LAG(name) OVER (ORDER BY name) FROM baseline_parent ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 2",
+          "columns": [
+            "lag"
+          ],
+          "rows": [
+            [
+              "seed"
+            ],
+            [
+              "NULL"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_with_recursive",
+      "group": "queries",
+      "steps": [
+        "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n \u003c 3) SELECT n FROM t ORDER BY 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 3",
+          "columns": [
+            "n"
+          ],
+          "rows": [
+            [
+              "1"
+            ],
+            [
+              "2"
+            ],
+            [
+              "3"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_aggregate_filter",
+      "group": "queries",
+      "steps": [
+        "SELECT count(*) FILTER (WHERE name = 'seed') FROM baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_merge",
+      "group": "queries",
+      "steps": [
+        "MERGE INTO baseline_idx t USING baseline_parent s ON t.id = '00000000-0000-0000-0000-0000000000a1' WHEN MATCHED THEN UPDATE SET value = 'x'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement type: MERGE"
+        }
+      ]
+    }
+  ]
+}

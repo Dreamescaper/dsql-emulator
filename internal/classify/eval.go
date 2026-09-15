@@ -29,6 +29,18 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.Locking) > 0 && !intersects(r.Locking, lockingStrengths(node)) {
 		return false
 	}
+	if len(r.Function) > 0 && !intersects(r.Function, functionNames(node)) {
+		return false
+	}
+	if len(r.Contains) > 0 && !containsNode(node, r.Contains) {
+		return false
+	}
+	if len(r.VacuumKind) > 0 && !contains(r.VacuumKind, vacuumKind(node)) {
+		return false
+	}
+	if len(r.ShowName) > 0 && !contains(r.ShowName, showName(node)) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -115,6 +127,13 @@ func lockingStrengths(node *pg_query.Node) []string {
 		}
 	}
 	return out
+}
+
+func showName(node *pg_query.Node) string {
+	if stmt := node.GetVariableShowStmt(); stmt != nil {
+		return stmt.GetName()
+	}
+	return ""
 }
 
 func removeType(node *pg_query.Node) string {

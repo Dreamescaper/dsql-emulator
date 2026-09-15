@@ -19,10 +19,6 @@ import (
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
 )
 
-// dsqlVersionPrefix is what DSQL's version() starts with; the rest is the
-// server_version value.
-const dsqlVersionPrefix = "PostgreSQL "
-
 // SQLSTATE and message reported for statements that arrive while a transaction
 // is already failed.
 const (
@@ -80,6 +76,9 @@ type session struct {
 	txStatus byte
 	// skipSync drops extended-protocol messages until the client's next Sync.
 	skipSync bool
+	// pendingCommandTag replaces the command tag of the next CommandComplete,
+	// for statements rewritten into an equivalent that reports a different tag.
+	pendingCommandTag string
 	// txnAborted reports that the client's transaction has failed and only
 	// COMMIT or ROLLBACK may end it.
 	txnAborted bool
@@ -222,6 +221,12 @@ func (s *session) pumpBackend() {
 				s.setStateTxStatus(rfq.TxStatus)
 			}
 		case 'C':
+			if encoded, ok := s.rewriteCommandTag(msg); ok {
+				if err := s.writeClient(encoded); err != nil {
+					return
+				}
+				continue
+			}
 			if was, described := s.takeAsyncIndex(); was {
 				if !described {
 					s.writeClient(jobIDRowDescription())
@@ -830,12 +835,38 @@ func (s *session) rewriteSQL(sql string) string {
 	key = strings.Join(strings.Fields(strings.ToLower(key)), " ")
 	switch key {
 	case "select version()":
-		return "SELECT '" + dsqlVersionPrefix + s.serverVersion + "' AS version"
+		return "SELECT '" + DefaultVersionFunction + "' AS version"
 	case "show server_version":
+		s.stateMu.Lock()
+		s.pendingCommandTag = "SHOW"
+		s.stateMu.Unlock()
 		return "SELECT '" + s.serverVersion + "' AS server_version"
 	default:
 		return ""
 	}
+}
+
+// rewriteCommandTag replaces the tag of the next CommandComplete when a
+// statement was rewritten into an equivalent with a different tag.
+func (s *session) rewriteCommandTag(msg wire.Message) ([]byte, bool) {
+	s.stateMu.Lock()
+	tag := s.pendingCommandTag
+	s.pendingCommandTag = ""
+	s.stateMu.Unlock()
+	if tag == "" {
+		return nil, false
+	}
+
+	var cc pgproto3.CommandComplete
+	if err := cc.Decode(msg.Body); err != nil {
+		return nil, false
+	}
+	cc.CommandTag = []byte(tag)
+	encoded, err := cc.Encode(nil)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
 }
 
 // statementInfo is what the session remembers about a prepared statement.

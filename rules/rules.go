@@ -49,6 +49,14 @@ type Rule struct {
 	RenameType []string `yaml:"rename_type"`
 	// Locking matches the row-locking strengths of a SELECT.
 	Locking []string `yaml:"locking"`
+	// Function matches any function called anywhere in the statement, and
+	// Contains any nested node by oneof name. VacuumKind separates VACUUM from
+	// ANALYZE, which share a statement node.
+	Function   []string `yaml:"function"`
+	Contains   []string `yaml:"contains"`
+	VacuumKind []string `yaml:"vacuum_kind"`
+	// ShowName matches the parameter named by SHOW.
+	ShowName []string `yaml:"show_name"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`

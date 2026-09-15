@@ -1,0 +1,80 @@
+{
+  "recorded_at": "2026-09-15T21:06:21.397701Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "occ_for_update",
+      "group": "occ",
+      "steps": [
+        "SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR UPDATE"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "id"
+          ],
+          "rows": [
+            [
+              "[0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 170]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "occ_for_key_share",
+      "group": "occ",
+      "steps": [
+        "SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR KEY SHARE"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "id"
+          ],
+          "rows": [
+            [
+              "[0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 170]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "occ_for_no_key_update",
+      "group": "occ",
+      "note": "documented as unsupported",
+      "steps": [
+        "SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR NO KEY UPDATE"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "locking clauses other than FOR UPDATE/FOR KEY SHARE are not supported"
+        }
+      ]
+    },
+    {
+      "name": "occ_for_share",
+      "group": "occ",
+      "note": "documented as unsupported",
+      "steps": [
+        "SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR SHARE"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "locking clauses other than FOR UPDATE/FOR KEY SHARE are not supported"
+        }
+      ]
+    }
+  ]
+}

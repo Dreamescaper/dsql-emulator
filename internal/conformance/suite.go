@@ -184,6 +184,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, enumCases()...)
 	cases = append(cases, environmentCases()...)
 	cases = append(cases, occCases()...)
+	cases = append(cases, queryCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -315,6 +316,87 @@ func occCases() []Case {
 		{Name: "occ_for_key_share", Group: "occ", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR KEY SHARE")},
 		{Name: "occ_for_no_key_update", Group: "occ", Note: "documented as unsupported", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR NO KEY UPDATE")},
 		{Name: "occ_for_share", Group: "occ", Note: "documented as unsupported", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR SHARE")},
+	}
+}
+
+// queryCases cover SELECT features, common query patterns, and a handful of
+// patterns and operators DSQL is expected to refuse.
+func queryCases() []Case {
+	return []Case{
+		// Supported clauses.
+		{Name: "q_where", Group: "queries", Steps: one("SELECT name FROM baseline_parent WHERE name = 'seed'")},
+		{Name: "q_distinct", Group: "queries", Steps: one("SELECT DISTINCT name FROM baseline_parent ORDER BY name")},
+		{Name: "q_group_by", Group: "queries", Steps: one("SELECT name, count(*) FROM baseline_parent GROUP BY name ORDER BY name")},
+		{Name: "q_group_by_all", Group: "queries", Note: "documented DSQL extension", Steps: one("SELECT name, count(*) FROM baseline_parent GROUP BY ALL")},
+		{Name: "q_group_by_distinct", Group: "queries", Steps: one("SELECT name, count(*) FROM baseline_parent GROUP BY DISTINCT name ORDER BY name")},
+		{Name: "q_having", Group: "queries", Steps: one("SELECT name, count(*) FROM baseline_parent GROUP BY name HAVING count(*) >= 0 ORDER BY name")},
+		{Name: "q_order_nulls", Group: "queries", Steps: one("SELECT name FROM baseline_parent ORDER BY name ASC NULLS FIRST")},
+		{Name: "q_order_desc_nulls_last", Group: "queries", Steps: one("SELECT name FROM baseline_parent ORDER BY name DESC NULLS LAST")},
+		{Name: "q_limit", Group: "queries", Steps: one("SELECT name FROM baseline_parent LIMIT 1")},
+		{Name: "q_window_rank", Group: "queries", Steps: one("SELECT name, RANK() OVER (PARTITION BY name ORDER BY name) FROM baseline_parent")},
+
+		// Joins and set operations.
+		{Name: "q_inner_join", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p INNER JOIN baseline_child c ON c.parent_id = p.id")},
+		{Name: "q_left_join", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p LEFT JOIN baseline_child c ON c.parent_id = p.id ORDER BY 1")},
+		{Name: "q_right_join", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p RIGHT JOIN baseline_child c ON c.parent_id = p.id")},
+		{Name: "q_full_join", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p FULL JOIN baseline_child c ON c.parent_id = p.id ORDER BY 1")},
+		{Name: "q_cross_join", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p CROSS JOIN baseline_child c ORDER BY 1")},
+		{Name: "q_union", Group: "queries", Steps: one("SELECT name FROM baseline_parent UNION SELECT name FROM baseline_parent ORDER BY 1")},
+		{Name: "q_union_all", Group: "queries", Steps: one("SELECT name FROM baseline_parent UNION ALL SELECT name FROM baseline_parent ORDER BY 1")},
+		{Name: "q_intersect", Group: "queries", Steps: one("SELECT name FROM baseline_parent INTERSECT SELECT name FROM baseline_parent ORDER BY 1")},
+		{Name: "q_except", Group: "queries", Steps: one("SELECT name FROM baseline_parent EXCEPT SELECT name FROM baseline_parent ORDER BY 1")},
+
+		// Common patterns not called out by the documentation.
+		{Name: "q_cte", Group: "queries", Steps: one("WITH x AS (SELECT name FROM baseline_parent) SELECT name FROM x")},
+		{Name: "q_cte_multiple", Group: "queries", Steps: one("WITH a AS (SELECT 1 AS n), b AS (SELECT n FROM a) SELECT n FROM b")},
+		{Name: "q_subquery_scalar", Group: "queries", Steps: one("SELECT (SELECT count(*) FROM baseline_parent)")},
+		{Name: "q_subquery_in", Group: "queries", Steps: one("SELECT name FROM baseline_parent WHERE id IN (SELECT parent_id FROM baseline_child)")},
+		{Name: "q_subquery_exists", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p WHERE EXISTS (SELECT 1 FROM baseline_child c WHERE c.parent_id = p.id)")},
+		{Name: "q_subquery_correlated", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p WHERE p.name = (SELECT q.name FROM baseline_parent q WHERE q.id = p.id) ORDER BY 1")},
+		{Name: "q_unnest", Group: "queries", Steps: one("SELECT unnest(string_to_array('a,b,c', ',')) ORDER BY 1")},
+		{Name: "q_array_runtime", Group: "queries", Steps: one("SELECT string_to_array('1,2,3', ',')")},
+		{Name: "q_generate_series", Group: "queries", Steps: one("SELECT * FROM generate_series(1, 3) ORDER BY 1")},
+		{Name: "q_case", Group: "queries", Steps: one("SELECT CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END")},
+		{Name: "q_coalesce_nullif", Group: "queries", Steps: one("SELECT coalesce(NULL, 'x'), nullif(1, 2)")},
+		{Name: "q_cast", Group: "queries", Steps: one("SELECT '1'::int + 1, 1::text")},
+		{Name: "q_string_ops", Group: "queries", Steps: one("SELECT 'a' || 'b', upper('a'), lower('A'), length('abc')")},
+		{Name: "q_aggregates", Group: "queries", Steps: one("SELECT count(*), count(DISTINCT name), min(name), max(name) FROM baseline_parent")},
+		{Name: "q_between", Group: "queries", Steps: one("SELECT 1 WHERE 2 BETWEEN 1 AND 3")},
+		{Name: "q_is_distinct_from", Group: "queries", Steps: one("SELECT 1 IS DISTINCT FROM 2")},
+
+		// DML shapes.
+		{Name: "q_insert_returning", Group: "queries", Steps: one("INSERT INTO baseline_idx (id, value) VALUES ('00000000-0000-0000-0000-0000000000a1', 'v1') RETURNING value")},
+		{Name: "q_upsert", Group: "queries", Steps: one("INSERT INTO baseline_idx (id, value) VALUES ('00000000-0000-0000-0000-0000000000a1', 'v2') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value")},
+		{Name: "q_insert_select", Group: "queries", Steps: one("INSERT INTO baseline_bulk SELECT generate_series(1, 3)")},
+		{Name: "q_update_returning", Group: "queries", Steps: one("UPDATE baseline_idx SET value = 'v3' WHERE id = '00000000-0000-0000-0000-0000000000a1' RETURNING value")},
+		{Name: "q_delete_returning", Group: "queries", Steps: one("DELETE FROM baseline_idx WHERE id = '00000000-0000-0000-0000-0000000000a1' RETURNING value")},
+		{Name: "q_delete_using", Group: "queries", Steps: one("DELETE FROM baseline_bulk USING baseline_parent WHERE baseline_bulk.id = 1")},
+
+		// Utility commands.
+		{Name: "q_explain", Group: "queries", Steps: one("EXPLAIN SELECT 1")},
+		{Name: "q_analyze", Group: "queries", Steps: one("ANALYZE baseline_parent")},
+		{Name: "q_set_constraints", Group: "queries", Steps: []string{"BEGIN", "SET CONSTRAINTS ALL DEFERRED", "COMMIT"}},
+
+		// Refused: functions on types DSQL does not have.
+		{Name: "q_fulltext_to_tsvector", Group: "queries", Steps: one("SELECT to_tsvector('english', 'hello world')")},
+		{Name: "q_fulltext_to_tsquery", Group: "queries", Steps: one("SELECT to_tsquery('english', 'hello & world')")},
+		{Name: "q_fulltext_websearch", Group: "queries", Steps: one("SELECT websearch_to_tsquery('english', 'hello world')")},
+		{Name: "q_fulltext_match", Group: "queries", Steps: one("SELECT 1 WHERE to_tsvector('english', 'a') @@ to_tsquery('english', 'a')")},
+		{Name: "q_geom_line", Group: "queries", Steps: one("SELECT line('{1,2,3}')")},
+		{Name: "q_geom_circle", Group: "queries", Steps: one("SELECT circle('<(0,0),1>'::text)")},
+
+		// Refused: constructs the documentation does not list.
+		{Name: "q_grouping_sets", Group: "queries", Steps: one("SELECT count(*) FROM baseline_parent GROUP BY GROUPING SETS ((name), ()) ORDER BY 1")},
+		{Name: "q_rollup", Group: "queries", Steps: one("SELECT count(*) FROM baseline_parent GROUP BY ROLLUP (name) ORDER BY 1")},
+		{Name: "q_cube", Group: "queries", Steps: one("SELECT count(*) FROM baseline_parent GROUP BY CUBE (name) ORDER BY 1")},
+		{Name: "q_lateral", Group: "queries", Steps: one("SELECT p.name FROM baseline_parent p CROSS JOIN LATERAL (SELECT count(*) FROM baseline_child c WHERE c.parent_id = p.id) AS x ORDER BY 1")},
+		{Name: "q_tablesample", Group: "queries", Steps: one("SELECT name FROM baseline_parent TABLESAMPLE SYSTEM (1)")},
+		{Name: "q_distinct_on", Group: "queries", Steps: one("SELECT DISTINCT ON (name) name FROM baseline_parent ORDER BY name")},
+		{Name: "q_window_row_number", Group: "queries", Steps: one("SELECT ROW_NUMBER() OVER (ORDER BY name) FROM baseline_parent ORDER BY 1")},
+		{Name: "q_window_lag", Group: "queries", Steps: one("SELECT LAG(name) OVER (ORDER BY name) FROM baseline_parent ORDER BY 1")},
+		{Name: "q_with_recursive", Group: "queries", Steps: one("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n FROM t ORDER BY 1")},
+		{Name: "q_aggregate_filter", Group: "queries", Steps: one("SELECT count(*) FILTER (WHERE name = 'seed') FROM baseline_parent")},
+		{Name: "q_merge", Group: "queries", Steps: one("MERGE INTO baseline_idx t USING baseline_parent s ON t.id = '00000000-0000-0000-0000-0000000000a1' WHEN MATCHED THEN UPDATE SET value = 'x'")},
 	}
 }
 

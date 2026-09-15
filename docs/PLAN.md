@@ -135,9 +135,9 @@ SQLSTATE: 40001
   presents a CA-issued one. `--no-tls` declines and stays plaintext; `GSSENC`
   is always declined.
 - **Version reporting.** The `server_version` parameter is rewritten to
-  `--server-version` (default `16`), and `SELECT version()` and
-  `SHOW server_version` are rewritten to return Aurora DSQL's values
-  (`PostgreSQL 16` and `16`).
+  `--server-version` (default `16.15`, what the cluster reports), and
+  `SELECT version()` and `SHOW server_version` are rewritten to Aurora DSQL's
+  values: `PostgreSQL 16` and `16.15`, the latter with the `SHOW` command tag.
 - **Still to do.** The password is forwarded to the backing server, so an IAM
   auth token is accepted only to the extent the backing server accepts it.
   Accepting arbitrary tokens means the emulator must own the client
@@ -226,8 +226,11 @@ occ:
 ```
 
 Available predicates: `relpersistence`, `column_type`, `column_array`,
-`objtype`, `txn_kind`, `set_name`, `language_not`, `sequence_cache_min`,
-`identity_cache_min`, `cache_allow`, `remove_type`, and `rename_type`. The `since` field is reserved for version-gating a rule, and
+`objtype`, `txn_kind`, `set_name`, `show_name`, `language_not`,
+`sequence_cache_min`, `identity_cache_min`, `cache_allow`, `remove_type`,
+`rename_type`, `locking`, `function`, `contains`, and `vacuum_kind`. `function`
+and `contains` walk the whole parse tree, so a construct nested in an
+expression or subquery is still found. The `since` field is reserved for version-gating a rule, and
 `rewrites` are textual pre-parses for syntax libpg_query cannot read. Foreign keys carry no rule:
 they are supported, so they are simply forwarded, and they appear only as an OCC
 source.
@@ -324,7 +327,14 @@ and the emulator now reproduces every recorded case:
 | A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
 | Data types | The documented supported set is accepted, including aliases and precision. Every type absent from it is refused with `0A000` "datatype X not supported", and array columns are refused too. Rule added; the deny-list covers the tested set. |
 | Query-runtime types | Arrays and `inet` work in expressions even though they cannot be columns. |
-| Row locking | `FOR UPDATE` and `FOR KEY SHARE` are accepted; `FOR SHARE` and `FOR NO KEY UPDATE` are refused with `0A000`. Rules added; probe cases await recording. |
+| Row locking | `FOR UPDATE` and `FOR KEY SHARE` are accepted; `FOR SHARE` and `FOR NO KEY UPDATE` are refused with `0A000`. Rules added. |
+| Query features | Joins, set operations, `GROUP BY`/`HAVING`/`DISTINCT`, `ORDER BY ... NULLS`, `LIMIT`, CTEs, scalar/`IN`/`EXISTS`/correlated subqueries, `unnest`, `generate_series`, aggregates, `RETURNING`, upsert, `INSERT ... SELECT`, `EXPLAIN`, `ANALYZE`, and `SET CONSTRAINTS` all work. `RANK() OVER (PARTITION BY ...)` works; so do `GROUPING SETS`, `ROLLUP`, `CUBE`, `LATERAL`, `DISTINCT ON`, `ROW_NUMBER`, `LAG`, `WITH RECURSIVE`, and aggregate `FILTER`, which the documentation does not list. |
+| `GROUP BY ALL` | The documentation lists it, but DSQL answers `42601 syntax error`, so the emulator's parse failure matches. |
+| Text search | `to_tsvector`, `to_tsquery`, `websearch_to_tsquery`, and `@@` fail as `42704 text search configuration "english" does not exist`. Rule added. |
+| Geometric functions | `line`, `circle`, and friends are refused with `0A000 datatype not supported`. Rule added. |
+| `MERGE` and `TABLESAMPLE` | Refused with `0A000`. Rules added. |
+| `SHOW lc_collate` | Refused with `42704 unrecognized configuration parameter`. Rule added. |
+| `server_version` | `16.15`; `version()` returns `PostgreSQL 16`. |
 | Enums | No user-defined types exist. `CREATE TYPE`, `ALTER TYPE` (add value and rename), and `DROP TYPE` are all refused with `0A000`; a column or cast naming one fails as `42704`. The workarounds work: a `text` column with a `CHECK (m IN (...))`, or a `CREATE DOMAIN ... CHECK (...)` whose domain is supported; a bad label raises `23514`. Rules added for the three statements. |
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |

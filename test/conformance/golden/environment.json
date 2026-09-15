@@ -1,0 +1,149 @@
+{
+  "recorded_at": "2026-09-15T21:06:21.397701Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "env_server_version",
+      "group": "environment",
+      "steps": [
+        "SHOW server_version"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SHOW",
+          "columns": [
+            "server_version"
+          ],
+          "rows": [
+            [
+              "16.15"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_version_function",
+      "group": "environment",
+      "steps": [
+        "SELECT version()"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "version"
+          ],
+          "rows": [
+            [
+              "PostgreSQL 16"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_current_database",
+      "group": "environment",
+      "steps": [
+        "SELECT current_database()"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "current_database"
+          ],
+          "rows": [
+            [
+              "postgres"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_current_schema",
+      "group": "environment",
+      "steps": [
+        "SELECT current_schema()"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "current_schema"
+          ],
+          "rows": [
+            [
+              "public"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_timezone",
+      "group": "environment",
+      "steps": [
+        "SHOW timezone"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SHOW",
+          "columns": [
+            "TimeZone"
+          ],
+          "rows": [
+            [
+              "UTC"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_client_encoding",
+      "group": "environment",
+      "steps": [
+        "SHOW client_encoding"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SHOW",
+          "columns": [
+            "client_encoding"
+          ],
+          "rows": [
+            [
+              "UTF8"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "env_lc_collate",
+      "group": "environment",
+      "steps": [
+        "SHOW lc_collate"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "unrecognized configuration parameter \"lc_collate\""
+        }
+      ]
+    }
+  ]
+}

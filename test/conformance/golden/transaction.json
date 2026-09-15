@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T20:37:27.853966Z",
+  "recorded_at": "2026-09-15T21:06:21.397701Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -368,6 +368,22 @@
               "0"
             ]
           ]
+        }
+      ]
+    },
+    {
+      "name": "row_cap_implicit",
+      "group": "transaction",
+      "note": "an autocommit statement that crosses the cap",
+      "steps": [
+        "INSERT INTO baseline_implicit_bulk SELECT generate_series(1, 3001)"
+      ],
+      "known_gap": "M3 remainder: an implicit transaction commits before its row count is known, so the emulator cannot refuse it",
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "54000",
+          "message": "transaction row limit exceeded"
         }
       ]
     }

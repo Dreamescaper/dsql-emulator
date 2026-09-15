@@ -70,6 +70,11 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"drop type", "DROP TYPE IF EXISTS mood", "drop_type", "0A000"},
 		{"for share", "SELECT 1 FROM t FOR SHARE", "unsupported_locking", "0A000"},
 		{"for no key update", "SELECT 1 FROM t FOR NO KEY UPDATE", "unsupported_locking", "0A000"},
+		{"text search", "SELECT to_tsvector('english', 'a')", "unsupported_text_search", "42704"},
+		{"geometry", "SELECT line('{1,2,3}')", "unsupported_geometry", "0A000"},
+		{"tablesample", "SELECT 1 FROM t TABLESAMPLE SYSTEM (1)", "tablesample", "0A000"},
+		{"merge", "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE", "merge", "0A000"},
+		{"show lc_collate", "SHOW lc_collate", "show_lc_collate", "42704"},
 	}
 
 	for _, tc := range cases {
@@ -110,6 +115,14 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 		"DROP TABLE t",
 		"SELECT 1 FROM t FOR UPDATE",
 		"SELECT 1 FROM t FOR KEY SHARE",
+		"ANALYZE t",
+		"SHOW server_version",
+		"SHOW timezone",
+		"SHOW client_encoding",
+		"SELECT count(*) FROM t GROUP BY GROUPING SETS ((1), ())",
+		"SELECT ROW_NUMBER() OVER (ORDER BY a) FROM t",
+		"WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n FROM r",
+		"SELECT count(*) FILTER (WHERE a = 1) FROM t",
 		"CREATE TABLE t (a smallint, b integer, c bigint, d real, e double precision, f numeric(18,6), g char(5), h varchar(5), i text)",
 		"CREATE TABLE t2 (a date, b time, c timetz, d timestamp, e timestamptz, f interval, g boolean, h bytea, i uuid, j json, k jsonb)",
 		"CREATE TABLE t3 (a int2, b int4, c int8, d float4, e float8, f bool, g bpchar(5), h decimal(10,2))",

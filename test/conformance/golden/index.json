@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T20:37:27.853966Z",
+  "recorded_at": "2026-09-15T21:06:21.397701Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -22,10 +22,11 @@
     {
       "name": "create_index_async",
       "group": "index",
+      "note": "returns a generated job_id",
       "steps": [
         "CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"
       ],
-      "known_gap": "M6: the emulator does not rewrite CREATE INDEX ASYNC yet",
+      "ignore_rows": true,
       "observations": [
         {
           "outcome": "ok",
@@ -35,7 +36,7 @@
           ],
           "rows": [
             [
-              "srx6csru7namjp3ebl2fhuggku"
+              "uk6dap5wczdhjnqkettroc6whe"
             ]
           ]
         }
@@ -48,7 +49,6 @@
         "SELECT count(*) AS n FROM sys.jobs"
       ],
       "ignore_rows": true,
-      "known_gap": "M6: sys.jobs is not emulated",
       "observations": [
         {
           "outcome": "ok",
@@ -58,7 +58,7 @@
           ],
           "rows": [
             [
-              "43"
+              "44"
             ]
           ]
         }
