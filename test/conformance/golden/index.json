@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:22:10.414979Z",
+  "recorded_at": "2026-09-15T22:36:27.064127Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -36,9 +36,152 @@
           ],
           "rows": [
             [
-              "4pb6kouml5cqljcv7vwa7iqem4"
+              "qfzv5uemkrg2lbczil2fim3o2q"
             ]
           ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_partial",
+      "group": "index",
+      "note": "partial index predicate",
+      "steps": [
+        "CREATE INDEX ASYNC baseline_partial_idx ON baseline_idx (value) WHERE value IS NOT NULL"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "wpg3syruinaahmvt5g7z42sfca"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_unique_partial",
+      "group": "index",
+      "steps": [
+        "CREATE UNIQUE INDEX ASYNC baseline_upartial_idx ON baseline_idx (value) WHERE value \u003c\u003e ''"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "jmnf45q4irepxcncurm2fgtqha"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_expression",
+      "group": "index",
+      "steps": [
+        "CREATE INDEX ASYNC baseline_expr_idx ON baseline_idx ((lower(value)))"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "jbyaasta3vgyvgcsrjr3ir6lrm"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_include",
+      "group": "index",
+      "steps": [
+        "CREATE INDEX ASYNC baseline_include_idx ON baseline_idx (value) INCLUDE (id)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "g7ziqnc6nfbo5k3m7t6in6vdmq"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_nulls_not_distinct",
+      "group": "index",
+      "steps": [
+        "CREATE UNIQUE INDEX ASYNC baseline_nnd_idx ON baseline_idx (value) NULLS NOT DISTINCT"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "6xbmlyyguvdnllxxzzivi7vaam"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_unnamed",
+      "group": "index",
+      "note": "the server chooses the name",
+      "steps": [
+        "CREATE INDEX ASYNC ON baseline_idx (value)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "gtjsmqsvdfactn3l4vattfnig4"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create_index_async_qualified",
+      "group": "index",
+      "note": "the documentation says a schema-qualified name is not allowed",
+      "steps": [
+        "CREATE INDEX ASYNC public.baseline_qualified_idx ON baseline_idx (value)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42601",
+          "message": "syntax error at or near \".\""
         }
       ]
     },
@@ -58,7 +201,7 @@
           ],
           "rows": [
             [
-              "32"
+              "63"
             ]
           ]
         }
@@ -75,7 +218,7 @@
       "observations": [
         {
           "outcome": "ok",
-          "command_tag": "SELECT 32",
+          "command_tag": "SELECT 63",
           "columns": [
             "job_id",
             "status",
@@ -376,68 +519,409 @@
             ],
             [
               "zbnnco4m5zcjleeuz5wznl7jcy",
-              "submitted",
+              "completed",
               "NULL",
               "ANALYZE",
               "1259",
               "26965",
-              "public.baseline_parent",
+              "NULL",
               "2026-09-15T22:22:11Z",
-              "NULL"
+              "2026-09-15T22:22:39Z"
             ],
             [
               "3s72qh3scjgslnd3pgljav6liy",
-              "submitted",
+              "completed",
               "NULL",
               "ANALYZE",
               "1259",
               "26996",
-              "public.baseline_conflict",
+              "NULL",
               "2026-09-15T22:22:12Z",
-              "NULL"
+              "2026-09-15T22:22:39Z"
             ],
             [
               "tmxn2hirojht3nt62ngixew4ii",
-              "submitted",
-              "NULL",
+              "completed",
+              "Skipped job for nonexistent table.",
               "ANALYZE",
               "1259",
               "26982",
-              "public.baseline_idx",
+              "NULL",
               "2026-09-15T22:22:18Z",
-              "NULL"
+              "2026-09-15T22:22:43Z"
             ],
             [
               "pnrnfehbyffdjef36trxppfltu",
-              "submitted",
+              "completed",
               "NULL",
               "ANALYZE",
               "1259",
               "26971",
-              "public.baseline_child",
+              "NULL",
               "2026-09-15T22:22:18Z",
-              "NULL"
+              "2026-09-15T22:22:39Z"
             ],
             [
               "scqfjqiv2fdvdcdhtu3exbmm7e",
-              "submitted",
+              "completed",
               "NULL",
               "DROP",
               "1259",
               "26990",
               "NULL",
               "2026-09-15T22:22:19Z",
-              "NULL"
+              "2026-09-15T22:22:39Z"
             ],
             [
               "4pb6kouml5cqljcv7vwa7iqem4",
-              "submitted",
+              "completed",
               "NULL",
               "INDEX_BUILD",
               "1259",
               "27030",
-              "public.baseline_idx_value_async",
+              "NULL",
               "2026-09-15T22:22:19Z",
+              "2026-09-15T22:22:39Z"
+            ],
+            [
+              "qcw4xmrrmjfehmg7uhvyx347ae",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "27038",
+              "NULL",
+              "2026-09-15T22:22:21Z",
+              "2026-09-15T22:22:45Z"
+            ],
+            [
+              "jxk7yqugq5hyvbsanxooayxv5i",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26987",
+              "NULL",
+              "2026-09-15T22:22:31Z",
+              "2026-09-15T22:22:42Z"
+            ],
+            [
+              "3kicl7e3yvebbffxyodtz5z57a",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "27001",
+              "NULL",
+              "2026-09-15T22:22:38Z",
+              "2026-09-15T22:22:40Z"
+            ],
+            [
+              "wbizaswruzehllwryudbdw3asu",
+              "completed",
+              "Skipped job for nonexistent table.",
+              "ANALYZE",
+              "1259",
+              "26996",
+              "NULL",
+              "2026-09-15T22:22:40Z",
+              "2026-09-15T22:22:41Z"
+            ],
+            [
+              "5vj5e3i5mzauhon5qy4cdwzgri",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27001",
+              "NULL",
+              "2026-09-15T22:22:40Z",
+              "2026-09-15T22:22:41Z"
+            ],
+            [
+              "gczh7dnqlvc55nlzi44uqnkx7y",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26996",
+              "NULL",
+              "2026-09-15T22:22:40Z",
+              "2026-09-15T22:22:41Z"
+            ],
+            [
+              "zhnzkimpgnguvjyncfhfnyuhtu",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26971",
+              "NULL",
+              "2026-09-15T22:22:40Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "g6uvfxzc65dfjoql3zpjkqqrjm",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27020",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "an3u2d7b2vgzzf4qsevwxbszrq",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26965",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "voapvynaxrbdxfphyf2ofmot4e",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27030",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "wjhd3iwat5ctpgh6it5ldutvry",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26982",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "zqcxolrnazhnre6d433e67nsa4",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26987",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "nkyl7h7ckzawjezvz5apwzemlq",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "26993",
+              "NULL",
+              "2026-09-15T22:22:41Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "wbdy4uph75dgzanceb4rwrd4xa",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27032",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "7l3ptuqr5zc5ll4w5c6zmsfr3e",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27038",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "fujiatinhncttcyv3zz5ylcp2a",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27041",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "gbfdmnkeuvde5gtwy2kusz6e4i",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27047",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "dxof2aicrvdlnimy2fkejlvy44",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27050",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:41Z"
+            ],
+            [
+              "mdkb7jaqsfdwphj35koccswgo4",
+              "completed",
+              "NULL",
+              "DROP",
+              "1259",
+              "27054",
+              "NULL",
+              "2026-09-15T22:22:42Z",
+              "2026-09-15T22:23:42Z"
+            ],
+            [
+              "nzbphy2f6fh2rkrliyujs7repi",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "27058",
+              "public.baseline_parent",
+              "2026-09-15T22:36:28Z",
+              "NULL"
+            ],
+            [
+              "hjbrwuvlzfbtpg4svjfgyqobte",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "27089",
+              "public.baseline_conflict",
+              "2026-09-15T22:36:28Z",
+              "NULL"
+            ],
+            [
+              "3zsabhmcnfcd3hndwlh5hc2sym",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "27075",
+              "public.baseline_idx",
+              "2026-09-15T22:36:34Z",
+              "NULL"
+            ],
+            [
+              "gvrvaviodjabjfpdxjplwzkum4",
+              "submitted",
+              "NULL",
+              "ANALYZE",
+              "1259",
+              "27064",
+              "public.baseline_child",
+              "2026-09-15T22:36:34Z",
+              "NULL"
+            ],
+            [
+              "pgdzkqhpvzdofez7u4i5dnv6f4",
+              "submitted",
+              "NULL",
+              "DROP",
+              "1259",
+              "27083",
+              "NULL",
+              "2026-09-15T22:36:35Z",
+              "NULL"
+            ],
+            [
+              "qfzv5uemkrg2lbczil2fim3o2q",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27123",
+              "public.baseline_idx_value_async",
+              "2026-09-15T22:36:35Z",
+              "NULL"
+            ],
+            [
+              "wpg3syruinaahmvt5g7z42sfca",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27124",
+              "public.baseline_partial_idx",
+              "2026-09-15T22:36:35Z",
+              "NULL"
+            ],
+            [
+              "jmnf45q4irepxcncurm2fgtqha",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27125",
+              "public.baseline_upartial_idx",
+              "2026-09-15T22:36:36Z",
+              "NULL"
+            ],
+            [
+              "jbyaasta3vgyvgcsrjr3ir6lrm",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27126",
+              "public.baseline_expr_idx",
+              "2026-09-15T22:36:36Z",
+              "NULL"
+            ],
+            [
+              "g7ziqnc6nfbo5k3m7t6in6vdmq",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27127",
+              "public.baseline_include_idx",
+              "2026-09-15T22:36:36Z",
+              "NULL"
+            ],
+            [
+              "6xbmlyyguvdnllxxzzivi7vaam",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27128",
+              "public.baseline_nnd_idx",
+              "2026-09-15T22:36:36Z",
+              "NULL"
+            ],
+            [
+              "gtjsmqsvdfactn3l4vattfnig4",
+              "submitted",
+              "NULL",
+              "INDEX_BUILD",
+              "1259",
+              "27129",
+              "public.baseline_idx_value_idx",
+              "2026-09-15T22:36:36Z",
               "NULL"
             ]
           ]
@@ -471,6 +955,21 @@
           "outcome": "error",
           "sqlstate": "0A000",
           "message": "cannot use subquery in CALL argument"
+        }
+      ]
+    },
+    {
+      "name": "sys_call_wait_for_job_literal",
+      "group": "index",
+      "note": "the CALL path with a literal argument",
+      "steps": [
+        "CALL sys.wait_for_job('no-such-job')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "22P02",
+          "message": "Unable to convert text to UUID"
         }
       ]
     }

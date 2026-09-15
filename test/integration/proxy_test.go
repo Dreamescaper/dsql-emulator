@@ -248,7 +248,7 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		// The same call with a literal, which is how it reads without a job
 		// lying around, still resolves the procedure.
 		_, err = conn.Exec(ctx, "CALL sys.wait_for_job('no-such-job')")
-		assertSQLState(t, err, "22023")
+		assertSQLState(t, err, "22P02")
 		var ignored string
 		err := conn.QueryRow(ctx, "SELECT sys.wait_for_job($1)", jobID).Scan(&ignored)
 		assertSQLState(t, err, "42809")
@@ -257,6 +257,41 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		if _, err := conn.Exec(ctx, "drop index widget_async_idx"); err != nil {
 			t.Fatalf("the index was not created: %v", err)
 		}
+	})
+
+	t.Run("partial index is created and recorded", func(t *testing.T) {
+		var jobID string
+		if err := conn.QueryRow(ctx,
+			"CREATE INDEX ASYNC widget_partial_idx ON widget (name) WHERE name <> ''").Scan(&jobID); err != nil {
+			t.Fatalf("create partial index: %v", err)
+		}
+
+		// The predicate has to survive the rewrite, or it is not a partial index.
+		var definition string
+		if err := conn.QueryRow(ctx,
+			"SELECT indexdef FROM pg_indexes WHERE indexname = 'widget_partial_idx'").Scan(&definition); err != nil {
+			t.Fatalf("the partial index was not created: %v", err)
+		}
+		if !strings.Contains(definition, "WHERE") {
+			t.Fatalf("index definition %q carries no predicate", definition)
+		}
+
+		var status string
+		if err := conn.QueryRow(ctx, "SELECT status FROM sys.jobs WHERE job_id = $1", jobID).Scan(&status); err != nil {
+			t.Fatalf("the returned job id is not in sys.jobs: %v", err)
+		}
+		if status != "completed" {
+			t.Fatalf("got status %q want completed", status)
+		}
+
+		if _, err := conn.Exec(ctx, "drop index widget_partial_idx"); err != nil {
+			t.Fatalf("drop index: %v", err)
+		}
+	})
+
+	t.Run("qualified index name is refused", func(t *testing.T) {
+		_, err := conn.Exec(ctx, "CREATE INDEX ASYNC public.widget_qualified_idx ON widget (name)")
+		assertSQLState(t, err, "42601")
 	})
 
 	t.Run("synchronous index is still refused", func(t *testing.T) {

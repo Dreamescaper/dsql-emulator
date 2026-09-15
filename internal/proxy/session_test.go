@@ -565,6 +565,38 @@ func TestSessionReturnsDerivedJobIDForAsyncIndex(t *testing.T) {
 	}
 }
 
+func TestSessionForwardsPartialAsyncIndex(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.send(t, &pgproto3.Query{String: "CREATE INDEX ASYNC idx ON t (a) WHERE a IS NOT NULL"})
+
+	query, ok := ts.receiveBackend(t).(*pgproto3.Query)
+	if !ok {
+		t.Fatal("expected a Query at the backend")
+	}
+	want := "CREATE INDEX idx ON t (a) WHERE a IS NOT NULL"
+	if query.String != want {
+		t.Fatalf("backend received %q want %q", query.String, want)
+	}
+}
+
+func TestSessionRejectsQualifiedIndexName(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.send(t, &pgproto3.Query{String: "CREATE INDEX ASYNC public.idx ON t (a)"})
+
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected an ErrorResponse for a schema-qualified index name")
+	}
+	if er.Code != "42601" {
+		t.Fatalf("got SQLSTATE %q want 42601 (%s)", er.Code, er.Message)
+	}
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected a ReadyForQuery after the rejection")
+	}
+}
+
 func TestSessionRewritesServerVersion(t *testing.T) {
 	ts := newTestSession(t)
 

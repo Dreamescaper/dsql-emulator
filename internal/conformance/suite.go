@@ -185,6 +185,13 @@ func DefaultSuite() Suite {
 		// Index dialect: DSQL requires ASYNC.
 		{Name: "create_index_sync", Group: "index", Note: "DSQL requires ASYNC; sync should be refused", Steps: one("CREATE INDEX baseline_idx_value ON baseline_idx (value)")},
 		{Name: "create_index_async", Group: "index", Note: "returns a generated job_id", Steps: one("CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"), IgnoreRows: true},
+		{Name: "create_index_async_partial", Group: "index", Note: "partial index predicate", Steps: one("CREATE INDEX ASYNC baseline_partial_idx ON baseline_idx (value) WHERE value IS NOT NULL"), IgnoreRows: true},
+		{Name: "create_index_async_unique_partial", Group: "index", Steps: one("CREATE UNIQUE INDEX ASYNC baseline_upartial_idx ON baseline_idx (value) WHERE value <> ''"), IgnoreRows: true},
+		{Name: "create_index_async_expression", Group: "index", Steps: one("CREATE INDEX ASYNC baseline_expr_idx ON baseline_idx ((lower(value)))"), IgnoreRows: true},
+		{Name: "create_index_async_include", Group: "index", Steps: one("CREATE INDEX ASYNC baseline_include_idx ON baseline_idx (value) INCLUDE (id)"), IgnoreRows: true},
+		{Name: "create_index_async_nulls_not_distinct", Group: "index", Steps: one("CREATE UNIQUE INDEX ASYNC baseline_nnd_idx ON baseline_idx (value) NULLS NOT DISTINCT"), IgnoreRows: true},
+		{Name: "create_index_async_unnamed", Group: "index", Note: "the server chooses the name, so no id can be derived from it", Steps: one("CREATE INDEX ASYNC ON baseline_idx (value)"), IgnoreRows: true},
+		{Name: "create_index_async_qualified", Group: "index", Note: "the documentation says a schema-qualified name is not allowed", Steps: one("CREATE INDEX ASYNC public.baseline_qualified_idx ON baseline_idx (value)")},
 		{Name: "sys_jobs", Group: "index", Steps: one("SELECT count(*) AS n FROM sys.jobs"), IgnoreRows: true},
 		{Name: "sys_jobs_columns", Group: "index", Note: "pin the real sys.jobs shape", Steps: one("SELECT * FROM sys.jobs"), IgnoreRows: true},
 		{Name: "sys_wait_for_job", Group: "index", Note: "pin the real wait_for_job contract", Steps: one("SELECT sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))")},

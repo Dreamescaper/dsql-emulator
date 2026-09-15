@@ -175,6 +175,11 @@ of it on 5432. `docker/init` is what provides `sys.jobs`, the row-cap trigger, a
 role clients connect as, so a container started from this image enforces the
 same rules as the test suite with no extra setup.
 
+`CREATE INDEX ASYNC` is rewritten textually because libpg_query cannot parse the
+`ASYNC` keyword; everything after it, including a `WHERE` predicate, an
+`INCLUDE` list, or `NULLS NOT DISTINCT`, is forwarded untouched, and the
+qualified-name check happens before anything is sent.
+
 `sys.jobs` records an `INDEX_BUILD` job for every `CREATE INDEX ASYNC`, because
 an event trigger registered for `CREATE INDEX` fires for explicit index
 creation but not for the index a `CREATE TABLE` makes for a key. Its columns,
@@ -415,6 +420,7 @@ and the emulator now reproduces every recorded case:
 | `server_version` | `16.15`; `version()` returns `PostgreSQL 16`. |
 | Enums | No user-defined types exist. `CREATE TYPE`, `ALTER TYPE` (add value and rename), and `DROP TYPE` are all refused with `0A000`; a column or cast naming one fails as `42704`. The workarounds work: a `text` column with a `CHECK (m IN (...))`, or a `CREATE DOMAIN ... CHECK (...)` whose domain is supported; a bad label raises `23514`. Rules added for the three statements. |
 | `server_version` | `PostgreSQL 16`. |
+| Partial indexes | Supported. `CREATE INDEX ASYNC ... WHERE`, index expressions, `INCLUDE`, `NULLS NOT DISTINCT`, and unnamed indexes all succeed with command tag `CREATE INDEX`. A schema-qualified index name is a syntax error (`42601`) because DSQL always puts the index in the table's schema; the emulator refuses it before forwarding, since PostgreSQL would accept it. |
 | Rejection message text | Recorded verbatim in the golden file. |
 
 Answered by the concurrency probes (recorded 2026-09-15):

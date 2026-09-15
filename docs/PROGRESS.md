@@ -34,6 +34,35 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Partial indexes (2026-09-15)
+
+Aurora DSQL added partial indexes, so the emulator was checked against them.
+
+- The feature needed no work: `rewriteAsyncIndex` only strips the `ASYNC`
+  keyword, so the `WHERE` predicate, index expressions, `INCLUDE`, and
+  `NULLS NOT DISTINCT` are forwarded untouched and PostgreSQL builds them.
+  Confirmed by an integration test that reads the predicate back from
+  `pg_indexes`, and by six new probes that all succeed with tag `CREATE INDEX`.
+- One restriction did need work. The documentation says an index name cannot be
+  schema-qualified, since DSQL always puts the index in the table's schema.
+  PostgreSQL would accept one, so the emulator now refuses it before
+  forwarding. The recording shows DSQL reports a **syntax error (`42601`,
+  `syntax error at or near "."`)**, not the `0A000` that was guessed first.
+- Job ids are now shaped as UUIDs, derived the same way from the index name.
+  The recording showed `wait_for_job` **converts its id to a UUID** — a bad id
+  is `22P02`, not "unknown job" — so an md5-hex id could not have been passed to
+  the emulator's own `wait_for_job`. `jobIDForIndex` and the recording trigger
+  both format md5 as `8-4-4-4-12`, and the procedure casts to `uuid` so an
+  invalid id fails the same way.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `195 cases match the golden record` with nothing unrecorded and no
+known gaps.
+
+Known limitation: an unnamed index gets no derivable name, so the `job_id`
+returned for it is random and will not be found in `sys.jobs`.
+
 ### Reconciled against DSQL's real sys.jobs and version paths (2026-09-15)
 
 Recording the four probes that were waiting on a cluster paid off; every one

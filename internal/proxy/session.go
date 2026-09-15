@@ -320,8 +320,8 @@ func (s *session) handleQuery(msg wire.Message) {
 		return
 	}
 
-	if rewritten, indexName, ok := rewriteAsyncIndex(query.String); ok {
-		s.forwardAsyncIndex(msg, query, rewritten, indexName, false)
+	if index, ok := parseAsyncIndex(query.String); ok {
+		s.forwardAsyncIndex(msg, query, index, false)
 		return
 	}
 
@@ -382,8 +382,8 @@ func (s *session) handleParse(msg wire.Message) {
 		return
 	}
 
-	if rewritten, indexName, ok := rewriteAsyncIndex(parse.Query); ok {
-		s.forwardAsyncIndex(msg, parse, rewritten, indexName, true)
+	if index, ok := parseAsyncIndex(parse.Query); ok {
+		s.forwardAsyncIndex(msg, parse, index, true)
 		return
 	}
 
@@ -776,7 +776,15 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 // forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
 // the PostgreSQL parser cannot read. It applies the transaction rules as DDL,
 // then forwards the rewritten statement so the index is built synchronously.
-func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten, indexName string, extended bool) {
+func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, index asyncIndex, extended bool) {
+	// Aurora DSQL puts the index in the table's schema; its grammar does not
+	// accept a qualified name, and it reports that as a syntax error.
+	if index.qualified {
+		s.logger.Info("rejected statement", "rule", "qualified_index", "code", "42601")
+		s.reject("42601", `syntax error at or near "."`, "qualified_index", extended)
+		return
+	}
+
 	kinds := []classify.Kind{classify.KindDDL}
 
 	if s.aborted() {
@@ -788,7 +796,7 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 		return
 	}
 
-	jobID := jobIDForIndex(indexName)
+	jobID := jobIDForIndex(index.name)
 	if jobID == "" {
 		// The name could not be read, so the derived id would not match the row
 		// the database records; hand back an opaque one instead.
@@ -801,9 +809,9 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 
 	switch m := frontend.(type) {
 	case *pgproto3.Query:
-		m.String = rewritten
+		m.String = index.rewritten
 	case *pgproto3.Parse:
-		m.Query = rewritten
+		m.Query = index.rewritten
 		s.statements[m.Name] = statementInfo{kinds: kinds}
 	}
 

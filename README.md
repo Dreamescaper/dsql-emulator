@@ -19,7 +19,7 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 181 probes, and the emulator is diffed against it. A
+real cluster answered for 195 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
 silently passing.
 
@@ -81,7 +81,7 @@ conn, err := pgx.Connect(ctx, dsn)
 | Dialect | Around forty rules over a real parse tree: `TRUNCATE`, extensions, triggers, extra databases, temporary and unlogged tables, `serial`, materialized views, `CREATE TABLE AS`, custom types, tablespaces, foreign tables, `VACUUM`, `LISTEN`/`NOTIFY`, `ALTER SYSTEM`, `MERGE`, `TABLESAMPLE`, text search, geometric types, and more |
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them |
-| Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; synchronous `CREATE INDEX` refused |
+| Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
 | OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
@@ -95,10 +95,11 @@ conn, err := pgx.Connect(ctx, dsn)
 - **`sys.jobs` records index builds only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
   columns, statuses, and `sys.wait_for_job` being a procedure. Two differences
-  remain: the job id is derived from the index name (DSQL issues random ids) so
-  the id handed back can be looked up, and DSQL also records `ANALYZE` and
-  `DROP` jobs. A `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already
-  exists returns an id with no row, because no build happened.
+  remain: the job id is a UUID derived from the index name (DSQL issues random
+  ids) so the id handed back can be looked up, and DSQL also records `ANALYZE`
+  and `DROP` jobs. Two cases return an id with no row, because no name can be
+  derived: `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists,
+  and an unnamed index whose name the server chooses.
 - **The reported version leaks on unusual paths.** `version()`,
   `SHOW server_version`, `current_setting('server_version')`,
   `current_setting('server_version_num')`, and `SHOW server_version_num` are

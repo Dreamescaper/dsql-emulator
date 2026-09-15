@@ -21,11 +21,18 @@ BEGIN
         -- class_id 1259 is pg_class, the catalog DSQL reports for an index.
         INSERT INTO sys.jobs
             (job_id, status, details, job_type, class_id, object_id, object_name, start_time, update_time)
-        SELECT md5(c.relname), 'completed', NULL, 'INDEX_BUILD', 1259, c.oid,
-               n.nspname || '.' || c.relname, now(), now()
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.oid = cmd.objid
+        -- The job id is md5 of the index name, shaped as a UUID to match what
+        -- the emulator hands the client and what wait_for_job accepts.
+        SELECT substr(m, 1, 8) || '-' || substr(m, 9, 4) || '-' || substr(m, 13, 4)
+                   || '-' || substr(m, 17, 4) || '-' || substr(m, 21, 12),
+               'completed', NULL, 'INDEX_BUILD', 1259, oid, object_name, now(), now()
+        FROM (
+            SELECT md5(c.relname) AS m, c.oid AS oid,
+                   n.nspname || '.' || c.relname AS object_name
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = cmd.objid
+        ) AS job
         ON CONFLICT (job_id) DO UPDATE
             SET status = EXCLUDED.status, update_time = EXCLUDED.update_time;
     END LOOP;

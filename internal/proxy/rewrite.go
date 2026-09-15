@@ -22,33 +22,39 @@ var (
 		`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+ASYNC\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + ident + `)(?:\s*\.\s*(` + ident + `))?\s+ON\b`)
 )
 
-// rewriteAsyncIndex removes the ASYNC keyword from a CREATE INDEX statement and
-// reports the index name. Both the emulator and the backing database derive the
-// job id from that name, so the id returned to the client matches the row the
-// database records.
-func rewriteAsyncIndex(sql string) (rewritten, indexName string, ok bool) {
-	if !asyncIndexPattern.MatchString(sql) {
-		return sql, "", false
-	}
-	rewritten = asyncIndexPattern.ReplaceAllString(sql, "${1}")
-	if strings.EqualFold(rewritten, sql) {
-		return sql, "", false
-	}
-	return rewritten, indexNameOf(sql), true
+// asyncIndex is a parsed CREATE INDEX ASYNC statement.
+type asyncIndex struct {
+	rewritten string
+	// name is the unqualified index name, or "" when the statement omits one
+	// and lets the server choose.
+	name string
+	// qualified reports that the index name carried a schema. Aurora DSQL does
+	// not allow that: the index always lands in the table's schema.
+	qualified bool
 }
 
-// indexNameOf returns the unqualified index name, unquoted and folded the way
-// PostgreSQL stores it, or "" when it cannot be read.
-func indexNameOf(sql string) string {
-	m := asyncIndexNamePattern.FindStringSubmatch(sql)
-	if m == nil {
-		return ""
+// parseAsyncIndex recognises a CREATE INDEX ASYNC statement, strips the keyword
+// that PostgreSQL's parser does not understand, and reads the index name. Both
+// the emulator and the backing database derive the job id from that name, so
+// the id returned to the client matches the row the database records.
+func parseAsyncIndex(sql string) (asyncIndex, bool) {
+	if !asyncIndexPattern.MatchString(sql) {
+		return asyncIndex{}, false
 	}
-	name := m[2]
-	if name == "" {
-		name = m[1]
+	rewritten := asyncIndexPattern.ReplaceAllString(sql, "${1}")
+	if strings.EqualFold(rewritten, sql) {
+		return asyncIndex{}, false
 	}
-	return unquoteIdent(name)
+
+	out := asyncIndex{rewritten: rewritten}
+	if m := asyncIndexNamePattern.FindStringSubmatch(sql); m != nil {
+		out.name = unquoteIdent(m[2])
+		if out.name == "" {
+			out.name = unquoteIdent(m[1])
+		}
+		out.qualified = m[2] != ""
+	}
+	return out, true
 }
 
 // unquoteIdent folds an identifier the way PostgreSQL would: a quoted name keeps
@@ -86,14 +92,16 @@ func serverVersionNum(version string) string {
 	return strconv.Itoa(major*10000 + minor*100 + patch)
 }
 
-// jobIDForIndex derives the job id both sides use. Aurora DSQL issues random
-// ids; deriving it from the index name keeps the id handed to the client
-// findable in sys.jobs without a round trip to read it back. It returns "" when
-// the name could not be read.
+// jobIDForIndex derives the job id both sides use. Aurora DSQL issues a random
+// id; deriving one from the index name keeps the id handed to the client
+// findable in sys.jobs without a round trip to read it back, and shapes it as a
+// UUID because wait_for_job converts the id to one. It returns "" when the name
+// could not be read.
 func jobIDForIndex(name string) string {
 	if name == "" {
 		return ""
 	}
 	sum := md5.Sum([]byte(name))
-	return hex.EncodeToString(sum[:])
+	h := hex.EncodeToString(sum[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
