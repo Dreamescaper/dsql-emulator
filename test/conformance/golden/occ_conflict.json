@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:36:27.064127Z",
+  "recorded_at": "2026-09-15T22:40:58.795215Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -21,9 +21,8 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -36,8 +35,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -62,14 +62,13 @@
             ],
             "rows": [
               [
-                "ww-b"
+                "ww-a"
               ]
             ]
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -82,8 +81,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -108,7 +108,7 @@
             ],
             "rows": [
               [
-                "fu-b"
+                "ww-a"
               ]
             ]
           },
@@ -151,8 +151,9 @@
             "command_tag": "DELETE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ],
         [
@@ -165,9 +166,8 @@
             "command_tag": "INSERT 0 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ]
       ]

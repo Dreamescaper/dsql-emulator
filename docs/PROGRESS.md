@@ -63,6 +63,11 @@ known gaps.
 Known limitation: an unnamed index gets no derivable name, so the `job_id`
 returned for it is random and will not be found in `sys.jobs`.
 
+`sys_jobs_columns` now reads `SELECT * FROM sys.jobs LIMIT 1`. The cluster's job
+log only grows, and that probe had already reached 63 stored rows, so the
+fixture grew with every recording. The columns are the point and the rows are
+ignored, so one row is enough.
+
 ### Reconciled against DSQL's real sys.jobs and version paths (2026-09-15)
 
 Recording the four probes that were waiting on a cluster paid off; every one

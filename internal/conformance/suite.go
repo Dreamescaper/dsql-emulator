@@ -193,7 +193,7 @@ func DefaultSuite() Suite {
 		{Name: "create_index_async_unnamed", Group: "index", Note: "the server chooses the name, so no id can be derived from it", Steps: one("CREATE INDEX ASYNC ON baseline_idx (value)"), IgnoreRows: true},
 		{Name: "create_index_async_qualified", Group: "index", Note: "the documentation says a schema-qualified name is not allowed", Steps: one("CREATE INDEX ASYNC public.baseline_qualified_idx ON baseline_idx (value)")},
 		{Name: "sys_jobs", Group: "index", Steps: one("SELECT count(*) AS n FROM sys.jobs"), IgnoreRows: true},
-		{Name: "sys_jobs_columns", Group: "index", Note: "pin the real sys.jobs shape", Steps: one("SELECT * FROM sys.jobs"), IgnoreRows: true},
+		{Name: "sys_jobs_columns", Group: "index", Note: "pin the real sys.jobs shape; limited because the cluster's job log only grows", Steps: one("SELECT * FROM sys.jobs LIMIT 1"), IgnoreRows: true},
 		{Name: "sys_wait_for_job", Group: "index", Note: "pin the real wait_for_job contract", Steps: one("SELECT sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))")},
 		{Name: "sys_call_wait_for_job", Group: "index", Note: "wait_for_job is a procedure on DSQL", Steps: one("CALL sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))")},
 		{Name: "sys_call_wait_for_job_literal", Group: "index", Note: "the CALL path with a literal argument", Steps: one("CALL sys.wait_for_job('no-such-job')")},
