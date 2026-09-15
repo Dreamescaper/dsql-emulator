@@ -648,4 +648,6 @@ with zero protocol assumptions.
 - M5: add concurrent-session probes to pin OCC behavior (`OC000`, `40001`).
   The suite currently uses a single connection, so it needs multi-session
   support first.
+- M3 remainder: `row_cap_implicit` pins the divergence as a known gap; preventing
+  it needs implicit transactions wrapped in an explicit upstream transaction.
 

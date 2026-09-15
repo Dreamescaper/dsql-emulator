@@ -173,7 +173,8 @@ Failed transactions:
 Remaining gap: an implicit (single-statement) transaction that crosses the row
 cap is still not prevented, because the statement commits before its row count
 is known. Preventing it needs implicit transactions to be wrapped in an explicit
-upstream transaction.
+upstream transaction. The `row_cap_implicit` probe records the divergence as a
+known gap so it stays visible.
 
 ## Ruleset
 
