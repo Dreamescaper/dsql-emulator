@@ -185,6 +185,13 @@ suite with no extra setup.
   a release is created, using the repository's own token, and tags the image
   with the release version (for example `1.2.3`) plus `latest` for a
   non-prerelease. Pushes to `main` do not publish.
+- Cut a release from the Actions tab with the `release` workflow and a
+  `patch`/`minor`/`major` bump. It verifies the build and tests, computes the
+  next version from the latest `v*` tag, creates the release with the default
+  token, then **calls the `image` workflow directly** — a release created with
+  `GITHUB_TOKEN` does not emit an event other workflows see, so relying on
+  `release: published` there would publish nothing. No personal access token is
+  needed. With no tags yet, the first release is `v0.1.0`.
 
 With testcontainers-go:
 

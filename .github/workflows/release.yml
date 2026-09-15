@@ -1,0 +1,95 @@
+name: release
+
+# Cuts a release without a personal token. The version is computed from the
+# latest v* tag, the release is created with the default GITHUB_TOKEN, and the
+# image is published by calling the image workflow directly, because a release
+# created with GITHUB_TOKEN does not trigger other workflows.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  release:
+    needs: verify
+    # Releases are cut from the default branch only.
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute the next version
+        id: version
+        run: |
+          set -eu
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            next="0.1.0"
+          else
+            base="${latest#v}"
+            base="${base%%-*}"
+            major="${base%%.*}"
+            rest="${base#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            case "${{ inputs.bump }}" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              *)     patch=$((patch + 1)) ;;
+            esac
+            next="${major}.${minor}.${patch}"
+          fi
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+          echo "next release: v${next}"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            --target "${{ github.event.repository.default_branch }}"
+
+  publish:
+    needs: release
+    uses: ./.github/workflows/image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      latest: true

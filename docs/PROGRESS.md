@@ -34,6 +34,26 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Automatic release versions, without a personal token (2026-09-15)
+
+Added a `release` workflow you run from the Actions tab with a
+`patch`/`minor`/`major` bump. It verifies the build and unit tests, computes
+the next version from the latest `v*` tag (the first release is `v0.1.0`),
+creates the release with `gh release create --generate-notes`, then publishes
+the image.
+
+The publishing step calls the `image` workflow directly rather than relying on
+`release: published`. GitHub suppresses events created with the default
+`GITHUB_TOKEN`, so a release made by the workflow would never have fired the
+`image` workflow — the release would appear with no image. Calling it directly
+avoids a personal access token entirely. `image` still listens for
+`release: published` too, so a release created by hand in the UI also publishes.
+
+The version arithmetic was checked against the cases that matter: no tags →
+`v0.1.0`; `patch`/`minor`/`major` on `v0.1.0` → `v0.1.1`/`v0.2.0`/`v1.0.0`; a
+prerelease tag `v1.2.3-rc.1` → `v1.2.4`; and multi-digit parts carry correctly
+(`v9.9.9` minor → `v9.10.0`).
+
 ### Image publishes on release (2026-09-15)
 
 The `image` workflow now runs on `release: published` instead of on pushes to

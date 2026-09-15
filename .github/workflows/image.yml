@@ -1,10 +1,23 @@
 name: image
 
-# Publish only when a release is created, so an image always corresponds to a
-# released version. `latest` follows the newest non-prerelease release.
+# Publishes to GHCR. Called directly by the release workflow, and also triggered
+# by a release created by hand in the UI. A release created with the default
+# GITHUB_TOKEN does not emit an event that other workflows see, which is why the
+# release workflow calls this rather than relying on `release: published`.
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Version tag to build, for example v1.2.3
+        required: true
+        type: string
+      latest:
+        description: Also tag the image as latest
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -14,6 +27,17 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve the tags to publish
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "latest=${{ inputs.latest }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "latest=${{ !github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: docker/setup-qemu-action@v3
 
@@ -33,8 +57,8 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }}
-            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.tag }}
+            type=raw,value=latest,enable=${{ steps.version.outputs.latest == 'true' }}
 
       - uses: docker/build-push-action@v6
         with:
