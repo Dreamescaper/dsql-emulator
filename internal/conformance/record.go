@@ -192,8 +192,9 @@ func runSessions(ctx context.Context, connect Connector, c Case, progress Progre
 				}
 				stepCtx, cancel := context.WithTimeout(ctx, sessionStepTimeout)
 				obs := Observe(stepCtx, conns[i], sql)
+				timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded)
 				cancel()
-				if obs.Outcome == "error" && stepCtx.Err() != nil {
+				if timedOut {
 					progress("session %d step %d timed out", i, j)
 				}
 				results[i] = append(results[i], obs)

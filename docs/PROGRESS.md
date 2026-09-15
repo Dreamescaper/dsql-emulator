@@ -34,6 +34,37 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M5 (part 3) — OCC behavior recorded (2026-09-15)
+
+Recorded the concurrency probes. The record now covers 181 cases, matches with
+no known gaps, and the cluster is clean.
+
+DSQL's conflict behavior, now pinned rather than assumed:
+
+- **The loser fails at `COMMIT`, not at its statement.** In every conflicting
+  case both writers' statements succeed and the second committer is rejected.
+- **The error is `40001 change conflicts with another transaction (OC000)`** —
+  byte-for-byte what the emulator already synthesizes for PostgreSQL's
+  serialization failure, so the wording needed no change.
+- `FOR UPDATE` versus a write, and `FOR KEY SHARE` versus deleting the key, both
+  conflict at commit.
+- A foreign-key delete-referenced-row versus insert-referencing-row conflicts at
+  commit, exactly as the documentation's example shows.
+- A non-key update does not conflict with a referencing insert, and writes to
+  different rows do not conflict; both are replayed and enforced.
+
+The remaining divergence is only *when* and *how* the loser fails: PostgreSQL
+blocks the second writer at its statement, so the emulator errors there rather
+than at commit. That is why the four conflicting probes stay `RecordOnly`.
+
+Also fixed a misleading log in `runSessions`: it reported a timeout whenever a
+step errored, because it checked the step context after cancelling it.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `181 cases match the golden record`, and `--cleanup-only` confirms
+no `baseline_` objects remain.
+
 ### M5 (part 2) — concurrent sessions and OCC probes (2026-09-15)
 
 The conformance suite can now run a case on several connections at once, and

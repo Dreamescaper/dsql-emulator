@@ -1,0 +1,248 @@
+{
+  "recorded_at": "2026-09-15T21:28:52.869551Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "occ_write_write",
+      "group": "occ_conflict",
+      "note": "two writers to one row: the loser fails at commit",
+      "steps": null,
+      "record_only": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_for_update_vs_write",
+      "group": "occ_conflict",
+      "note": "FOR UPDATE versus a write",
+      "steps": null,
+      "record_only": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "SELECT 1",
+            "columns": [
+              "name"
+            ],
+            "rows": [
+              [
+                "ww-a"
+              ]
+            ]
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_for_key_share_vs_delete",
+      "group": "occ_conflict",
+      "note": "FOR KEY SHARE versus deleting the key",
+      "steps": null,
+      "record_only": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "SELECT 1",
+            "columns": [
+              "name"
+            ],
+            "rows": [
+              [
+                "ww-a"
+              ]
+            ]
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "DELETE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_fk_delete_insert",
+      "group": "occ_conflict",
+      "note": "delete a referenced row while another session inserts a referencing row",
+      "steps": null,
+      "record_only": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "DELETE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "INSERT 0 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_fk_nonkey_update",
+      "group": "occ_conflict",
+      "note": "a non-key update does not conflict with a referencing insert",
+      "steps": null,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "INSERT 0 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_disjoint_writes",
+      "group": "occ_conflict",
+      "note": "writes to different rows do not conflict",
+      "steps": null,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    }
+  ]
+}

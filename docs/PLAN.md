@@ -93,6 +93,15 @@ Three stacked modes, each explicit about what it fakes:
 3. **Adjudication shim (not built).** A global write-intent registry would
    approximate lock-free conflict at commit without the blocking.
 
+What the emulator does *not* match, and why, is now measured rather than
+assumed. The recording shows DSQL letting both writers' statements succeed and
+failing the **second committer** at `COMMIT` with `40001 change conflicts with
+another transaction (OC000)`. That message is byte-for-byte what the emulator
+already synthesizes for PostgreSQL's serialization failure, so the wording is
+exact; the difference is *when* and *how* the loser fails. PostgreSQL blocks the
+second writer at its statement, so it errors there instead of at commit. The
+four conflicting probes are therefore `RecordOnly`.
+
 The suite can now run a case on several connections at once, so DSQL's conflict
 output is recorded rather than assumed. Conflicting cases are marked
 `RecordOnly`: they are recorded against a real cluster but never replayed
@@ -345,14 +354,22 @@ and the emulator now reproduces every recorded case:
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |
 
+Answered by the concurrency probes (recorded 2026-09-15):
+
+| Question | Answer |
+|----------|--------|
+| When does the loser fail? | At `COMMIT`, not at the statement: both writers' `UPDATE`s succeed and the second committer is rejected. |
+| Error wording | `40001 change conflicts with another transaction (OC000)` — identical to what the emulator synthesizes. |
+| `FOR UPDATE` versus a write | Conflicts; the `FOR UPDATE` session committed first and the writer's commit failed. |
+| `FOR KEY SHARE` versus deleting the key | Conflicts at commit. |
+| Foreign key delete/insert | Conflicts at commit, as the documentation's example shows. |
+| Non-key update versus a referencing insert | No conflict. |
+| Writes to different rows | No conflict. |
+
 Still open:
 
-- The concurrency probes await their first recording: `occ_write_write`,
-  `occ_for_update_vs_write`, `occ_for_key_share_vs_delete`, and
-  `occ_fk_delete_insert` are record-only, and two non-conflicting cases are
-  enforced once recorded.
 - Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`; only the
-  delete/insert and non-key-update pairs are probed so far.
+  delete/insert and non-key-update pairs are probed.
 
 ## Prior art
 
