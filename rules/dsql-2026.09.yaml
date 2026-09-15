@@ -1,0 +1,126 @@
+dsql_version: "2026.09"
+
+# Statements Aurora DSQL rejects. Each rule names a libpg_query statement node
+# (snake_case oneof name) and optional predicates that must all match.
+# Reference: https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html
+unsupported:
+  - id: truncate
+    stmt: truncate_stmt
+    code: "0A000"
+    message: "TRUNCATE is not supported; use DELETE FROM instead"
+
+  - id: extensions
+    stmt: create_extension_stmt
+    code: "0A000"
+    message: "PostgreSQL extensions are not supported"
+
+  - id: triggers
+    stmt: create_trig_stmt
+    code: "0A000"
+    message: "triggers are not supported; implement logic in the application"
+
+  - id: create_database
+    stmt: createdb_stmt
+    code: "0A000"
+    message: "Aurora DSQL supports a single database named postgres"
+
+  - id: temporary_table
+    stmt: create_stmt
+    relpersistence: ["t"]
+    code: "0A000"
+    message: "temporary tables are not supported"
+
+  - id: unlogged_table
+    stmt: create_stmt
+    relpersistence: ["u"]
+    code: "0A000"
+    message: "unlogged tables are not supported"
+
+  - id: serial
+    stmt: create_stmt
+    column_type: ["serial", "bigserial", "smallserial"]
+    code: "0A000"
+    message: "serial types are not supported; use GENERATED ... AS IDENTITY or a uuid"
+
+  - id: materialized_view
+    stmt: create_table_as_stmt
+    objtype: ["OBJECT_MATVIEW"]
+    code: "0A000"
+    message: "materialized views are not supported"
+
+  - id: create_table_as
+    stmt: create_table_as_stmt
+    objtype: ["OBJECT_TABLE"]
+    code: "0A000"
+    message: "CREATE TABLE AS is not supported"
+
+  - id: enum_type
+    stmt: create_enum_stmt
+    code: "0A000"
+    message: "custom types are not supported"
+
+  - id: composite_type
+    stmt: composite_type_stmt
+    code: "0A000"
+    message: "custom types are not supported"
+
+  - id: range_type
+    stmt: create_range_stmt
+    code: "0A000"
+    message: "custom types are not supported"
+
+  - id: domain_type
+    stmt: create_domain_stmt
+    code: "0A000"
+    message: "custom types are not supported"
+
+  - id: tablespace
+    stmt: create_table_space_stmt
+    code: "0A000"
+    message: "tablespaces are not supported"
+
+  - id: foreign_table
+    stmt: create_foreign_table_stmt
+    code: "0A000"
+    message: "foreign tables are not supported"
+
+  - id: vacuum
+    stmt: vacuum_stmt
+    code: "0A000"
+    message: "VACUUM is not supported"
+
+  - id: listen
+    stmt: listen_stmt
+    code: "0A000"
+    message: "LISTEN is not supported"
+
+  - id: notify
+    stmt: notify_stmt
+    code: "0A000"
+    message: "NOTIFY is not supported"
+
+  - id: unlisten
+    stmt: unlisten_stmt
+    code: "0A000"
+    message: "UNLISTEN is not supported"
+
+  - id: alter_system
+    stmt: alter_system_stmt
+    code: "0A000"
+    message: "ALTER SYSTEM is not supported"
+
+  - id: create_function
+    stmt: create_function_stmt
+    code: "0A000"
+    message: "user-defined functions are not supported"
+
+limits:
+  dml_rows_per_txn: 3000
+  txn_age_seconds: 1800
+
+occ:
+  sources: ["write_write", "select_for_update", "select_for_key_share", "fk_key_share"]
+  key_columns_only_for: ["fk_key_share"]
+  error: "change conflicts with another transaction (OC000)"
+  sqlstate: "40001"
+  inject: []

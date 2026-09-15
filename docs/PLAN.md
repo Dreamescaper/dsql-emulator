@@ -119,28 +119,42 @@ All require parsing, not regex:
 
 ## Ruleset
 
-The feature matrix is a moving target — AWS docs currently contradict each other
-on foreign key support. Rules are therefore data-driven and **versioned**, never
-hardcoded.
+The feature matrix is a moving target — foreign keys moved from unsupported to
+supported, and stale docs still contradict each other. Rules are therefore
+data-driven and **versioned**, never hardcoded.
+
+`rules/dsql-<version>.yaml` names a libpg_query statement node (`stmt`, the
+snake_case oneof name) plus optional predicates. A rule rejects when every
+predicate it sets holds. A statement with no matching rule is forwarded.
 
 ```yaml
 dsql_version: "2026.09"
-supported:                    # version-gated; older rulesets rejected these
-  - match: { node: CreateStmt, has: ForeignKeyConstraint }
-    since: "TBD"              # verify actual GA date against a live cluster
-    actions: [NO ACTION, RESTRICT, CASCADE, SET NULL, SET DEFAULT]
-    match_types: [FULL, SIMPLE]
-    deferrable: true
+
 unsupported:
-  - match: { node: TruncateStmt }
+  - id: truncate
+    stmt: truncate_stmt
     code: "0A000"
-    message: "TRUNCATE is not supported"
-rewrites:
-  - match: { node: IndexStmt, async: true }
-    to: "CREATE INDEX ..."
+    message: "TRUNCATE is not supported; use DELETE FROM instead"
+  - id: temporary_table
+    stmt: create_stmt
+    relpersistence: ["t"]
+    code: "0A000"
+    message: "temporary tables are not supported"
+  - id: serial
+    stmt: create_stmt
+    column_type: ["serial", "bigserial", "smallserial"]
+    code: "0A000"
+    message: "serial types are not supported; use GENERATED ... AS IDENTITY or a uuid"
+  - id: materialized_view
+    stmt: create_table_as_stmt
+    objtype: ["OBJECT_MATVIEW"]
+    code: "0A000"
+    message: "materialized views are not supported"
+
 limits:
   dml_rows_per_txn: 3000
   txn_age_seconds: 1800
+
 occ:
   sources: [write_write, select_for_update, select_for_key_share, fk_key_share]
   key_columns_only_for: [fk_key_share]
@@ -149,13 +163,18 @@ occ:
   inject: []
 ```
 
+Available predicates: `relpersistence`, `column_type`, `objtype`, `txn_kind`.
+The `since` field is reserved for version-gating a rule, and `rewrites` (for
+`CREATE INDEX ASYNC`) lands in M5. Foreign keys carry no rule: they are
+supported, so they are simply forwarded, and they appear only as an OCC source.
+
 ## Milestones
 
 | ID | Deliverable | Status |
 |----|-------------|--------|
 | M0 | Wire proxy passthrough, 1:1 pinning, pgx round-trip test | done |
-| M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | next |
-| M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | planned |
+| M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | done |
+| M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | next |
 | M3 | Auth/TLS/version emulation; single DB; UTC/C collation | planned |
 | M4 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
 | M5 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
@@ -165,14 +184,13 @@ occ:
 
 ```
 cmd/dsql-emu/            CLI entry point
-internal/proxy/          connection handling and wire relay
-internal/classify/       AST → verdict                  (M1)
-internal/rules/          embedded versioned rulesets    (M1)
+internal/proxy/          session handling, interception, raw relay fallback
+internal/wire/           protocol framing and message decoding
+internal/classify/       libpg_query AST → verdict
+rules/                   embedded versioned ruleset and loader
 internal/session/        transaction state machine      (M2)
 internal/occ/            conflict injection/adjudication (M4)
-internal/backend/        upstream connection management
 internal/sysjobs/        sys schema emulation           (M5)
-rules/                   dsql-<version>.yaml            (M1)
 test/integration/        container-backed tests
 test/conformance/        live-cluster fixtures         (M6)
 ```
@@ -181,13 +199,20 @@ test/conformance/        live-cluster fixtures         (M6)
 
 Confirm against a live cluster before trusting the ruleset:
 
-- Actual GA/`since` version for foreign key support.
+- Whether savepoints are rejected. The ruleset does **not** reject them yet,
+  because the evidence is not conclusive.
+- Whether `CREATE VIEW` is rejected. Two prior-art projects list views as
+  unsupported; the ruleset does not reject them.
+- Whether `CREATE FUNCTION ... LANGUAGE sql` is rejected. The ruleset currently
+  rejects every `CREATE FUNCTION`, which may be too broad.
+- Whether `CREATE TABLE AS` is truly unsupported.
+- Exact rejection message text. The ruleset mirrors AWS's meaning, not its
+  wording.
 - Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL` (they write the
   referencing table, so they should be OCC writers).
 - Exact OCC code mapping (`OC000`, `OC001`, ...) and message text.
 - Exact SQLSTATE for the DML row-cap violation.
 - Reported `server_version` string.
-- Whether savepoints are rejected.
 
 ## Prior art
 

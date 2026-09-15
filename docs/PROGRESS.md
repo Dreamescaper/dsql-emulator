@@ -6,9 +6,10 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**M0 complete.** The emulator is a working PostgreSQL wire-protocol relay: one
-upstream connection per client, with unit and container-backed integration tests
-passing.
+**M1 complete.** The emulator relays the PostgreSQL wire protocol, frames and
+classifies client statements against a versioned ruleset, and rejects
+unsupported SQL with real SQLSTATEs while forwarding everything else. Unit and
+container-backed integration tests pass.
 
 Last updated: 2026-09-15.
 
@@ -33,6 +34,69 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### M1 — AST classifier and rejection (2026-09-15)
+
+Delivered:
+
+- `internal/wire/` — protocol framing. `ReadTagged` and `ReadStartup` frame
+  messages without altering them, so the proxy can inspect traffic and forward
+  the original bytes; `DecodeFrontend` maps a frame body to its `pgproto3`
+  message.
+- `rules/` — versioned ruleset package (`rules.go` plus embedded
+  `dsql-2026.09.yaml`). Unknown YAML fields are rejected and rule ids, codes,
+  and messages are validated at load.
+- `internal/classify/` — libpg_query (real parser, `pg_query_go/v6`) evaluates
+  each statement against the ruleset. A parse error is returned as an error, not
+  a rejection: unparseable SQL (including DSQL-only syntax like `CREATE INDEX
+  ASYNC`) is forwarded for the backing server to answer.
+- `internal/proxy/session.go` — startup relay with SSLRequest/GSSENC handling,
+  client message classification, and rejection injection. Simple-protocol
+  rejections emit `ErrorResponse` + `ReadyForQuery`; extended-protocol rejections
+  emit `ErrorResponse` and skip ahead to the next `Sync`. The session tracks
+  `ReadyForQuery` transaction status so injected status is accurate. When a
+  client negotiates TLS directly with the upstream, the session falls back to a
+  raw relay and interception is disabled for that connection.
+- 22 rejection rules covering TRUNCATE, extensions, triggers, extra databases,
+  temp/unlogged tables, serial types, materialized views, `CREATE TABLE AS`,
+  custom types, tablespaces, foreign tables, VACUUM, LISTEN/NOTIFY/UNLISTEN,
+  ALTER SYSTEM, and user-defined functions.
+- Tests: `internal/wire/framing_test.go`, `internal/classify/classify_test.go`
+  (23 rejection cases, 10 allow cases, unknown-field validation),
+  `internal/proxy/session_test.go` (white-box rejection over in-memory pipes),
+  `internal/proxy/relay_test.go` (raw relay fallback).
+
+Verification:
+
+```
+gofmt -l .                                 # no output
+go build ./...                             # ok
+go vet ./...                               # ok
+go vet -tags integration ./...             # ok
+go test ./...                              # ok: internal/{classify,proxy,wire}
+go test -tags integration -count=1 ./test/...
+```
+
+Integration run — all nine subtests pass, including the new rejection paths and
+a foreign-key regression guard:
+
+- `rejects_unsupported_simple_protocol_statement` — TRUNCATE returns `0A000`
+- `rejects_unsupported_extended_protocol_statement` — CREATE TRIGGER returns `0A000`
+- `rejects_serial_column` — serial returns `0A000`
+- `connection_usable_after_rejection` — the session is not wedged by a rejection
+- `foreign_keys_are_supported` — FK DDL is forwarded and succeeds
+
+Deliberate limitations:
+
+- Ruleset contents are not yet verified against a live cluster. Provisional
+  items (savepoints, views, `CREATE FUNCTION ... LANGUAGE sql`, `CREATE TABLE
+  AS`) are recorded in the PLAN.md verification backlog.
+- `CREATE INDEX ASYNC` is neither rewritten nor accepted; it reaches Postgres,
+  which rejects it as a syntax error. Rewriting is M5.
+- Rejection messages mirror AWS's meaning, not its exact wording.
+- Extended-protocol rejections drop messages until `Sync`, so statements
+  batched ahead of a rejected `Parse` are abandoned, matching PostgreSQL's
+  error semantics.
 
 ### Repo bootstrap (2026-09-15)
 
@@ -95,15 +159,28 @@ with zero protocol assumptions.
 | 2026-09-15 | One upstream connection per client | Correct transaction and `SET` semantics; pooling deferred. |
 | 2026-09-15 | Raw byte relay for M0 | Proves end-to-end connectivity with no protocol assumptions before adding interception. |
 | 2026-09-15 | Foreign keys are a supported OCC feature | Recent DSQL addition; belongs in the adjudicator, not the reject list. See PLAN.md. |
+| 2026-09-15 | Ruleset lives in `rules/` as a package | `go:embed` cannot reach outside its package directory, so the loader and the YAML share `rules/` instead of splitting across `internal/rules` and `rules/`. |
+| 2026-09-15 | Parse errors are forwarded, not rejected | DSQL-only syntax such as `CREATE INDEX ASYNC` does not parse with stock libpg_query. Treating parse failure as incompatibility would wrongly reject valid DSQL. |
+| 2026-09-15 | Extended-protocol rejection drops messages until `Sync` | Mirrors PostgreSQL: after an error the server ignores messages until the next `Sync`, and this keeps the upstream connection in step with the client. |
+| 2026-09-15 | No per-connection prepared-statement tracking in M1 | Classification happens where the SQL text arrives (`Query`, `Parse`), so the name-to-SQL map is not yet needed. It returns in M2 for row counting across `Execute`. |
+| 2026-09-15 | TLS-negotiated connections fall back to raw relay | The emulator does not terminate TLS or hold the upstream key, so it cannot see inside a session the client encrypts end to end. |
 
 ## Next up
 
-### M1 — AST classifier and rejection
+### M2 — session transaction state machine
 
-- Add `pg_query_go` (libpg_query) and build `internal/classify`.
-- Decode frontend messages with `pgproto3` inside `Proxy.serve`, including
-  per-connection prepared-statement tracking for the extended protocol.
-- Land the versioned ruleset loader in `internal/rules` plus `rules/*.yaml`.
-- Reject unsupported statements with real SQLSTATEs (`0A000`, ...).
-- Integration test: unsupported SQL is rejected with the expected code, and
-  supported SQL still relays.
+- Parse `BEGIN` / `COMMIT` / `ROLLBACK` / `SET TRANSACTION` and enforce
+  `REPEATABLE READ`, rejecting `SERIALIZABLE`.
+- Enforce one DDL per transaction and separate DDL from DML transactions.
+- Enforce the 3000-row DML cap by summing `CommandComplete` row tags across a
+  transaction, and the 30-minute transaction age limit.
+- Track begin time and row counts per session; reset on transaction end.
+- Unit tests for each rule plus integration tests proving a violation surfaces
+  the expected SQLSTATE and rolls back.
+
+### Carried into M2 from M1
+
+- Per-connection prepared-statement tracking, needed to count rows produced by
+  `Execute` when the statement was prepared by an earlier `Parse`.
+- Verify the provisional ruleset entries against a live cluster (see the PLAN.md
+  verification backlog).

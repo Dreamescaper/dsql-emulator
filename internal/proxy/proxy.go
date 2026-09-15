@@ -9,6 +9,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Dreamescaper/dsql-emulator/internal/classify"
+	"github.com/Dreamescaper/dsql-emulator/rules"
 )
 
 const relayBufferSize = 32 * 1024
@@ -23,14 +26,18 @@ type Config struct {
 	DialTimeout time.Duration
 	// Logger receives structured proxy events. Defaults to slog.Default.
 	Logger *slog.Logger
+	// Classifier decides which statements are acceptable. Defaults to the
+	// embedded Aurora DSQL ruleset.
+	Classifier *classify.Classifier
 }
 
 // Proxy relays PostgreSQL wire-protocol traffic between clients and a backing
 // PostgreSQL server. Every accepted client connection gets its own upstream
 // connection, so backend session state stays pinned 1:1.
 type Proxy struct {
-	cfg    Config
-	logger *slog.Logger
+	cfg        Config
+	logger     *slog.Logger
+	classifier *classify.Classifier
 
 	ready   chan struct{}
 	mu      sync.Mutex
@@ -53,11 +60,19 @@ func New(cfg Config) (*Proxy, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.Classifier == nil {
+		rs, err := rules.Default()
+		if err != nil {
+			return nil, fmt.Errorf("load default ruleset: %w", err)
+		}
+		cfg.Classifier = classify.New(rs)
+	}
 	return &Proxy{
-		cfg:    cfg,
-		logger: cfg.Logger,
-		ready:  make(chan struct{}),
-		conns:  make(map[net.Conn]struct{}),
+		cfg:        cfg,
+		logger:     cfg.Logger,
+		classifier: cfg.Classifier,
+		ready:      make(chan struct{}),
+		conns:      make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -98,13 +113,12 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 }
 
-// serve pins one client connection to one upstream connection and relays bytes
-// in both directions until either side closes.
+// serve pins one client connection to one upstream connection. It intercepts
+// protocol traffic when it can and falls back to a raw relay otherwise.
 func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
-	clientAddr := client.RemoteAddr().String()
-	log := p.logger.With("client", clientAddr)
+	log := p.logger.With("client", client.RemoteAddr().String())
 
 	upstream, err := p.dialUpstream(ctx)
 	if err != nil {
@@ -118,14 +132,29 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	defer p.untrack(client)
 	defer p.untrack(upstream)
 
-	var fromClient, fromUpstream atomic.Int64
+	s := &session{
+		logger:     log,
+		client:     client,
+		upstream:   upstream,
+		classifier: p.classifier,
+		txStatus:   'I',
+	}
+
 	start := time.Now()
-	relay(upstream, client, &fromClient, &fromUpstream)
+	intercept, err := s.handshake()
+	switch {
+	case err != nil:
+		log.Debug("handshake ended", "err", err)
+	case intercept:
+		s.run()
+	default:
+		relay(upstream, client, &s.fromClient, &s.fromUpstream)
+	}
 
 	log.Debug("connection closed",
 		"duration", time.Since(start),
-		"bytes_to_upstream", fromClient.Load(),
-		"bytes_from_upstream", fromUpstream.Load(),
+		"bytes_to_upstream", s.fromClient.Load(),
+		"bytes_from_upstream", s.fromUpstream.Load(),
 	)
 }
 
