@@ -143,7 +143,8 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 			DMLRows: limits.DMLRowsPerTxn,
 			MaxAge:  time.Duration(limits.TxnAgeSeconds) * time.Second,
 		}),
-		txStatus: 'I',
+		statements: make(map[string][]classify.Kind),
+		txStatus:   'I',
 	}
 
 	start := time.Now()

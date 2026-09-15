@@ -46,7 +46,8 @@ func newTestSession(t *testing.T) *testSession {
 			DMLRows: rs.Limits.DMLRowsPerTxn,
 			MaxAge:  time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
 		}),
-		txStatus: 'I',
+		statements: make(map[string][]classify.Kind),
+		txStatus:   'I',
 	}
 
 	ts := &testSession{
@@ -182,7 +183,7 @@ func TestSessionForwardsSupportedStatements(t *testing.T) {
 		{"select", "SELECT 1"},
 		{"foreign key", "CREATE TABLE t (id int PRIMARY KEY, parent_id int REFERENCES parent(id))"},
 		{"deferrable foreign key", "CREATE TABLE t (id int, parent_id int REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)"},
-		{"identity column", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY)"},
+		{"identity column with cache", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY (CACHE 65536) PRIMARY KEY)"},
 	}
 
 	for _, tc := range cases {
@@ -211,8 +212,8 @@ func TestSessionRejectsSerialColumn(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ErrorResponse for serial column")
 	}
-	if er.Code != "0A000" {
-		t.Fatalf("got SQLSTATE %q want 0A000", er.Code)
+	if er.Code != "42704" {
+		t.Fatalf("got SQLSTATE %q want 42704", er.Code)
 	}
 	if !strings.Contains(er.Message, "serial") {
 		t.Fatalf("message %q does not mention serial", er.Message)
@@ -329,4 +330,92 @@ func TestSessionRejectsUnsupportedIsolation(t *testing.T) {
 	ts := newTestSession(t)
 
 	ts.expectRejectedQuery(t, "BEGIN ISOLATION LEVEL SERIALIZABLE", "0A000")
+}
+
+// parse prepares a statement and relays the backend's ParseComplete.
+func (ts *testSession) parse(t *testing.T, name, sql string) {
+	t.Helper()
+	ts.send(t, &pgproto3.Parse{Name: name, Query: sql})
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Parse); !ok {
+		t.Fatal("expected Parse at the backend")
+	}
+	ts.sendBackend(t, &pgproto3.ParseComplete{})
+	if _, ok := ts.receive(t).(*pgproto3.ParseComplete); !ok {
+		t.Fatal("expected ParseComplete at the client")
+	}
+}
+
+// bind runs a prepared statement's Bind, expecting it to be forwarded.
+func (ts *testSession) bind(t *testing.T, portal, statement string) {
+	t.Helper()
+	ts.send(t, &pgproto3.Bind{DestinationPortal: portal, PreparedStatement: statement})
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Bind); !ok {
+		t.Fatal("expected Bind at the backend")
+	}
+	ts.sendBackend(t, &pgproto3.BindComplete{})
+	if _, ok := ts.receive(t).(*pgproto3.BindComplete); !ok {
+		t.Fatal("expected BindComplete at the client")
+	}
+}
+
+func (ts *testSession) execute(t *testing.T, portal string) {
+	t.Helper()
+	ts.send(t, &pgproto3.Execute{Portal: portal})
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Execute); !ok {
+		t.Fatal("expected Execute at the backend")
+	}
+}
+
+func (ts *testSession) complete(t *testing.T, tag string, status byte) {
+	t.Helper()
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte(tag)})
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected CommandComplete at the client")
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery at the client")
+	}
+}
+
+// TestSessionTracksReusedPreparedStatements covers clients that cache prepared
+// statements: after the first Parse, transaction control arrives as Bind with no
+// Parse, and the rules must still see it.
+func TestSessionTracksReusedPreparedStatements(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.parse(t, "b", "BEGIN")
+	ts.bind(t, "pb", "b")
+	ts.execute(t, "pb")
+	ts.complete(t, "BEGIN", 'T')
+
+	ts.parse(t, "c", "CREATE TABLE cached_t (id int)")
+	ts.bind(t, "pc", "c")
+	ts.execute(t, "pc")
+	ts.complete(t, "CREATE TABLE", 'T')
+
+	ts.parse(t, "m", "COMMIT")
+	ts.bind(t, "pm", "m")
+	ts.execute(t, "pm")
+	ts.complete(t, "COMMIT", 'I')
+
+	// Cache hits: no Parse follows for either statement.
+	ts.bind(t, "pb2", "b")
+	ts.execute(t, "pb2")
+	ts.complete(t, "BEGIN", 'T')
+
+	ts.bind(t, "pc2", "c")
+	ts.execute(t, "pc2")
+	ts.complete(t, "CREATE TABLE", 'T')
+
+	// The cached BEGIN opened a transaction, so this DML after DDL must fail.
+	ts.parse(t, "i", "INSERT INTO cached_t (id) VALUES (1)")
+	ts.send(t, &pgproto3.Bind{DestinationPortal: "pi", PreparedStatement: "i"})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected the cached DML after DDL to be refused")
+	}
+	if er.Code != "0A000" {
+		t.Fatalf("got SQLSTATE %q want 0A000", er.Code)
+	}
 }

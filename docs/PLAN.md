@@ -181,10 +181,47 @@ occ:
   inject: []
 ```
 
-Available predicates: `relpersistence`, `column_type`, `objtype`, `txn_kind`.
-The `since` field is reserved for version-gating a rule, and `rewrites` (for
-`CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule: they are
-supported, so they are simply forwarded, and they appear only as an OCC source.
+Available predicates: `relpersistence`, `column_type`, `objtype`, `txn_kind`,
+`set_name`, `language_not`, `sequence_cache_min`, `identity_cache_min`, and
+`cache_allow`. The `since` field is reserved for version-gating a rule, and
+`rewrites` (for `CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule:
+they are supported, so they are simply forwarded, and they appear only as an OCC
+source.
+
+Rules are checked against a recorded baseline; see
+[Conformance suite](#conformance-suite-golden-record).
+
+## Conformance suite (golden record)
+
+The ruleset is only as good as its evidence, so real DSQL behavior is captured
+rather than assumed.
+
+- `internal/conformance` holds the probe suite and the recording and comparison
+  logic, shared by both halves.
+- `cmd/dsql-baseline` records how a real cluster answers the suite and writes a
+  golden record (default `test/conformance/golden/`, one fixture per case
+  group so no single file grows without bound).
+- `test/conformance` replays the same suite through the emulator and diffs it
+  against that record. It needs Docker but never touches a cluster.
+
+The comparison enforces outcome, SQLSTATE, command tag, and rows. Error
+*messages* are reported but advisory, because server wording drifts. A case may
+set `IgnoreRows` (generated ids, `version()`) or `KnownGap` (an accepted
+divergence); known gaps are reported and not enforced. The emulator's copy of a
+case supplies step text and suite metadata, so editing the suite takes effect
+without re-recording.
+
+Safety, because the target is someone's cluster:
+
+- every object is prefixed `baseline_` and dropped by `Suite.Cleanup`, which
+  runs even when the run fails;
+- every case is followed by a ROLLBACK, so a case that leaves a transaction open
+  or aborted cannot poison the next one;
+- the suite is roughly 70 statements, which keeps cost negligible;
+- `--dry-run` prints the whole suite without connecting.
+
+Re-run `make baseline` whenever DSQL changes; the record is a snapshot, not a
+fixture to keep forever.
 
 ## Milestones
 
@@ -197,41 +234,55 @@ supported, so they are simply forwarded, and they appear only as an OCC source.
 | M4 | Auth/TLS/version emulation; single DB; UTC/C collation | planned |
 | M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | planned |
-| M7 | Conformance harness vs a real cluster (opt-in) | planned |
+| M7 | Conformance harness: golden record + emulator diff | done |
 
 ## Repository layout
 
 ```
-cmd/dsql-emu/            CLI entry point
+cmd/dsql-emu/            emulator CLI
+cmd/dsql-baseline/       records a golden record from a real cluster   (M7)
 internal/proxy/          session handling, interception, raw relay fallback
 internal/wire/           protocol framing and message decoding
 internal/classify/       libpg_query AST → verdict and statement kinds
-internal/txn/            transaction state machine and limits      (M2)
-internal/occ/            conflict injection/adjudication           (M5)
-internal/sysjobs/        sys schema emulation                      (M6)
+internal/txn/            transaction state machine and limits          (M2)
+internal/conformance/    probe suite, recording, and comparison        (M7)
+internal/occ/            conflict injection/adjudication               (M5)
+internal/sysjobs/        sys schema emulation                          (M6)
 rules/                   embedded versioned ruleset and loader
 test/integration/        container-backed tests
-test/conformance/        live-cluster fixtures                    (M7)
+test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
 ```
 
 ## Verification backlog
 
-Confirm against a live cluster before trusting the ruleset:
+Answered by the first baseline run (`test/conformance/golden/`,
+recorded against a real cluster on 2026-09-15). The ruleset was reconciled to
+match, and the emulator now reproduces all 53 cases except the deliberate gaps:
 
-- Whether savepoints are rejected. The ruleset does **not** reject them yet,
-  because the evidence is not conclusive.
-- Whether `CREATE VIEW` is rejected. Two prior-art projects list views as
-  unsupported; the ruleset does not reject them.
-- Whether `CREATE FUNCTION ... LANGUAGE sql` is rejected. The ruleset currently
-  rejects every `CREATE FUNCTION`, which may be too broad.
-- Whether `CREATE TABLE AS` is truly unsupported.
-- Exact rejection message text. The ruleset mirrors AWS's meaning, not its
-  wording.
-- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL` (they write the
-  referencing table, so they should be OCC writers).
-- Exact OCC code mapping (`OC000`, `OC001`, ...) and message text.
-- Exact SQLSTATE for the DML row-cap violation.
-- Reported `server_version` string.
+| Question | Answer |
+|----------|--------|
+| Savepoints | Rejected, `0A000`. Rule added. |
+| `CREATE VIEW` | Supported. No rule. |
+| `CREATE FUNCTION ... LANGUAGE sql` | Supported. Rule narrowed to non-`sql` languages. |
+| `CREATE TABLE AS` / materialized view | Rejected, `0A000`. |
+| `CREATE SEQUENCE` | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added. |
+| Synchronous `CREATE INDEX` | Rejected, `0A000`; ASYNC required. Rule added. |
+| `serial` column | Rejected as `42704` "type does not exist", not `0A000`. |
+| Identity column | Rejected unless `CACHE >= 65536` or `CACHE = 1`. Rule added. |
+| `CREATE DOMAIN` | Supported. Rule removed. |
+| `SET TRANSACTION` | Refused entirely, `0A000`. Rule added. |
+| DML row cap | `54000` "transaction row limit exceeded"; the statement itself fails and the transaction is aborted (`25P02`). |
+| `server_version` | `PostgreSQL 16`. |
+| Rejection message text | Recorded verbatim in the golden file. |
+
+Still open, with probe cases added to the suite for the next recording:
+
+- Function languages other than `sql` (the rule assumes they are refused).
+- Identity and sequence `CACHE 65536` / `CACHE 1` acceptance.
+- `ROLLBACK TO SAVEPOINT`, `SET default_transaction_isolation`.
+- OCC behavior: not covered by this suite, which uses one connection. Needs
+  concurrent sessions to pin `OC000` codes and commit-time conflict outcomes.
+- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`.
 
 ## Prior art
 

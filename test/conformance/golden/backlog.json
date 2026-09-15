@@ -1,0 +1,79 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "savepoint",
+      "group": "backlog",
+      "note": "savepoints: currently not rejected by the ruleset",
+      "steps": [
+        "SAVEPOINT baseline_sp"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported transaction statement: SAVEPOINT"
+        }
+      ]
+    },
+    {
+      "name": "create_view",
+      "group": "backlog",
+      "note": "views: currently not rejected by the ruleset",
+      "steps": [
+        "CREATE VIEW baseline_v AS SELECT 1 AS x"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE VIEW"
+        }
+      ]
+    },
+    {
+      "name": "create_sequence",
+      "group": "backlog",
+      "note": "sequences: currently not rejected by the ruleset",
+      "steps": [
+        "CREATE SEQUENCE baseline_seq"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE SEQUENCE is not supported without an explicit cache size. please define CACHE greater than or equal to 65536 or equal to 1"
+        }
+      ]
+    },
+    {
+      "name": "create_sequence_cached",
+      "group": "backlog",
+      "note": "sequences with high CACHE may be allowed",
+      "steps": [
+        "CREATE SEQUENCE baseline_seq2 CACHE 65536"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE SEQUENCE"
+        }
+      ]
+    },
+    {
+      "name": "create_schema",
+      "group": "backlog",
+      "steps": [
+        "CREATE SCHEMA baseline_schema"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE SCHEMA"
+        }
+      ]
+    }
+  ]
+}

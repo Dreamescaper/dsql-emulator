@@ -1,0 +1,302 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "truncate",
+      "group": "unsupported",
+      "steps": [
+        "TRUNCATE TABLE baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Truncate"
+        }
+      ]
+    },
+    {
+      "name": "create_extension",
+      "group": "unsupported",
+      "steps": [
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateExtension"
+        }
+      ]
+    },
+    {
+      "name": "create_trigger",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TRIGGER baseline_trg AFTER INSERT ON baseline_parent EXECUTE FUNCTION baseline_fn()"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE TRIGGER not supported"
+        }
+      ]
+    },
+    {
+      "name": "create_database",
+      "group": "unsupported",
+      "steps": [
+        "CREATE DATABASE baseline_other"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Createdb"
+        }
+      ]
+    },
+    {
+      "name": "temporary_table",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TEMPORARY TABLE baseline_temp (id int)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "TEMPORARY or TEMP table not supported for CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "unlogged_table",
+      "group": "unsupported",
+      "steps": [
+        "CREATE UNLOGGED TABLE baseline_unlogged (id int)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "UNLOGGED table not supported for CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "serial_column",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TABLE baseline_serial (id serial PRIMARY KEY)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "type \"serial\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "materialized_view",
+      "group": "unsupported",
+      "steps": [
+        "CREATE MATERIALIZED VIEW baseline_mv AS SELECT 1 AS x"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateTableAs"
+        }
+      ]
+    },
+    {
+      "name": "create_table_as",
+      "group": "unsupported",
+      "note": "confirm CTAS is unsupported",
+      "steps": [
+        "CREATE TABLE baseline_ctas AS SELECT 1 AS x"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateTableAs"
+        }
+      ]
+    },
+    {
+      "name": "enum_type",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TYPE baseline_mood AS ENUM ('sad', 'ok')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE TYPE not supported"
+        }
+      ]
+    },
+    {
+      "name": "composite_type",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TYPE baseline_pair AS (a int, b int)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CompositeType"
+        }
+      ]
+    },
+    {
+      "name": "range_type",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TYPE baseline_range AS RANGE (subtype = int4)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateRange"
+        }
+      ]
+    },
+    {
+      "name": "domain_type",
+      "group": "unsupported",
+      "steps": [
+        "CREATE DOMAIN baseline_domain AS int"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE DOMAIN"
+        }
+      ]
+    },
+    {
+      "name": "tablespace",
+      "group": "unsupported",
+      "steps": [
+        "CREATE TABLESPACE baseline_ts LOCATION '/tmp/baseline'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateTableSpace"
+        }
+      ]
+    },
+    {
+      "name": "foreign_table",
+      "group": "unsupported",
+      "steps": [
+        "CREATE FOREIGN TABLE baseline_ft (id int) SERVER baseline_srv"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: CreateForeignTable"
+        }
+      ]
+    },
+    {
+      "name": "vacuum",
+      "group": "unsupported",
+      "steps": [
+        "VACUUM baseline_parent"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported VACUUM statement"
+        }
+      ]
+    },
+    {
+      "name": "listen",
+      "group": "unsupported",
+      "steps": [
+        "LISTEN baseline_chan"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Listen"
+        }
+      ]
+    },
+    {
+      "name": "notify",
+      "group": "unsupported",
+      "steps": [
+        "NOTIFY baseline_chan"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Notify"
+        }
+      ]
+    },
+    {
+      "name": "unlisten",
+      "group": "unsupported",
+      "steps": [
+        "UNLISTEN baseline_chan"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: Unlisten"
+        }
+      ]
+    },
+    {
+      "name": "alter_system",
+      "group": "unsupported",
+      "steps": [
+        "ALTER SYSTEM SET work_mem = '4MB'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported statement: AlterSystem"
+        }
+      ]
+    },
+    {
+      "name": "create_function",
+      "group": "unsupported",
+      "note": "is LANGUAGE sql rejected too, or only plpgsql?",
+      "steps": [
+        "CREATE FUNCTION baseline_fn() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE FUNCTION"
+        }
+      ]
+    }
+  ]
+}

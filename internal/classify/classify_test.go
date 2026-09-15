@@ -25,30 +25,38 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		name string
 		sql  string
 		rule string
+		code string
 	}{
-		{"truncate", "TRUNCATE widget", "truncate"},
-		{"create extension", "CREATE EXTENSION pgcrypto", "extensions"},
-		{"trigger", "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f()", "triggers"},
-		{"create database", "CREATE DATABASE other", "create_database"},
-		{"temporary table", "CREATE TEMPORARY TABLE t (id int)", "temporary_table"},
-		{"unlogged table", "CREATE UNLOGGED TABLE t (id int)", "unlogged_table"},
-		{"serial", "CREATE TABLE t (id serial)", "serial"},
-		{"bigserial", "CREATE TABLE t (id bigserial)", "serial"},
-		{"smallserial", "CREATE TABLE t (id smallserial)", "serial"},
-		{"materialized view", "CREATE MATERIALIZED VIEW mv AS SELECT 1", "materialized_view"},
-		{"create table as", "CREATE TABLE t AS SELECT 1", "create_table_as"},
-		{"enum type", "CREATE TYPE mood AS ENUM ('a')", "enum_type"},
-		{"composite type", "CREATE TYPE pair AS (a int, b int)", "composite_type"},
-		{"range type", "CREATE TYPE r AS RANGE (subtype = int4)", "range_type"},
-		{"domain type", "CREATE DOMAIN d AS int", "domain_type"},
-		{"tablespace", "CREATE TABLESPACE ts LOCATION '/tmp/x'", "tablespace"},
-		{"foreign table", "CREATE FOREIGN TABLE ft (a int) SERVER s", "foreign_table"},
-		{"vacuum", "VACUUM t", "vacuum"},
-		{"listen", "LISTEN chan", "listen"},
-		{"notify", "NOTIFY chan", "notify"},
-		{"unlisten", "UNLISTEN chan", "unlisten"},
-		{"alter system", "ALTER SYSTEM SET work_mem = '1MB'", "alter_system"},
-		{"create function", "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$", "create_function"},
+		{"truncate", "TRUNCATE widget", "truncate", "0A000"},
+		{"create extension", "CREATE EXTENSION pgcrypto", "extensions", "0A000"},
+		{"trigger", "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f()", "triggers", "0A000"},
+		{"create database", "CREATE DATABASE other", "create_database", "0A000"},
+		{"temporary table", "CREATE TEMPORARY TABLE t (id int)", "temporary_table", "0A000"},
+		{"unlogged table", "CREATE UNLOGGED TABLE t (id int)", "unlogged_table", "0A000"},
+		{"serial", "CREATE TABLE t (id serial)", "serial", "42704"},
+		{"bigserial", "CREATE TABLE t (id bigserial)", "serial", "42704"},
+		{"smallserial", "CREATE TABLE t (id smallserial)", "serial", "42704"},
+		{"identity without cache", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY)", "identity_cache", "0A000"},
+		{"identity with small cache", "CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY (CACHE 100))", "identity_cache", "0A000"},
+		{"materialized view", "CREATE MATERIALIZED VIEW mv AS SELECT 1", "materialized_view", "0A000"},
+		{"create table as", "CREATE TABLE t AS SELECT 1", "create_table_as", "0A000"},
+		{"enum type", "CREATE TYPE mood AS ENUM ('a')", "enum_type", "0A000"},
+		{"composite type", "CREATE TYPE pair AS (a int, b int)", "composite_type", "0A000"},
+		{"range type", "CREATE TYPE r AS RANGE (subtype = int4)", "range_type", "0A000"},
+		{"sequence without cache", "CREATE SEQUENCE s", "sequence_cache", "0A000"},
+		{"sequence with small cache", "CREATE SEQUENCE s CACHE 100", "sequence_cache", "0A000"},
+		{"tablespace", "CREATE TABLESPACE ts LOCATION '/tmp/x'", "tablespace", "0A000"},
+		{"foreign table", "CREATE FOREIGN TABLE ft (a int) SERVER s", "foreign_table", "0A000"},
+		{"vacuum", "VACUUM t", "vacuum", "0A000"},
+		{"listen", "LISTEN chan", "listen", "0A000"},
+		{"notify", "NOTIFY chan", "notify", "0A000"},
+		{"unlisten", "UNLISTEN chan", "unlisten", "0A000"},
+		{"alter system", "ALTER SYSTEM SET work_mem = '1MB'", "alter_system", "0A000"},
+		{"set transaction", "SET TRANSACTION READ ONLY", "set_transaction", "0A000"},
+		{"savepoint", "SAVEPOINT sp", "savepoint", "0A000"},
+		{"release savepoint", "RELEASE SAVEPOINT sp", "release_savepoint", "0A000"},
+		{"synchronous index", "CREATE INDEX idx ON t (a)", "sync_index", "0A000"},
+		{"plpgsql function", "CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$", "create_function_language", "0A000"},
 	}
 
 	for _, tc := range cases {
@@ -60,8 +68,8 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 			if result.Verdict.RuleID != tc.rule {
 				t.Fatalf("got rule %q want %q", result.Verdict.RuleID, tc.rule)
 			}
-			if result.Verdict.Code != "0A000" {
-				t.Fatalf("got SQLSTATE %q want 0A000", result.Verdict.Code)
+			if result.Verdict.Code != tc.code {
+				t.Fatalf("got SQLSTATE %q want %q", result.Verdict.Code, tc.code)
 			}
 		})
 	}
@@ -76,11 +84,17 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 		"BEGIN",
 		"COMMIT",
 		"CREATE TABLE t (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)",
-		"CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY)",
+		"CREATE TABLE t (id bigint GENERATED ALWAYS AS IDENTITY (CACHE 65536) PRIMARY KEY)",
 		"CREATE TABLE t (id int PRIMARY KEY, parent_id int REFERENCES parent(id))",
 		"CREATE TABLE t (id int, parent_id int REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)",
 		"ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES parent(id)",
 		"CREATE SEQUENCE s CACHE 65536",
+		"CREATE SEQUENCE s2 CACHE 1",
+		"CREATE DOMAIN d AS int",
+		"CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$",
+		"CREATE VIEW v AS SELECT 1 AS x",
+		"CREATE SCHEMA s",
+		"DROP TABLE t",
 	}
 
 	for _, sql := range sqls {
@@ -125,7 +139,6 @@ func TestClassifyReportsStatementKinds(t *testing.T) {
 		{"CREATE TABLE t (id int)", []classify.Kind{classify.KindDDL}},
 		{"ALTER TABLE t ADD COLUMN a int", []classify.Kind{classify.KindDDL}},
 		{"DROP TABLE t", []classify.Kind{classify.KindDDL}},
-		{"CREATE INDEX idx ON t (a)", []classify.Kind{classify.KindDDL}},
 		{"BEGIN", []classify.Kind{classify.KindBegin}},
 		{"START TRANSACTION", []classify.Kind{classify.KindBegin}},
 		{"COMMIT", []classify.Kind{classify.KindCommit}},
@@ -171,6 +184,9 @@ func TestClassifyRejectsUnsupportedIsolation(t *testing.T) {
 			if result.Verdict.Code != "0A000" {
 				t.Fatalf("got SQLSTATE %q want 0A000", result.Verdict.Code)
 			}
+			if result.Verdict.RuleID != "isolation" {
+				t.Fatalf("got rule %q want isolation", result.Verdict.RuleID)
+			}
 			if !strings.Contains(result.Verdict.Message, "Unsupported isolation level") {
 				t.Fatalf("message %q does not mention the isolation level", result.Verdict.Message)
 			}
@@ -183,10 +199,7 @@ func TestClassifyAllowsRepeatableReadIsolation(t *testing.T) {
 
 	sqls := []string{
 		"BEGIN ISOLATION LEVEL REPEATABLE READ",
-		"SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-		"SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ",
 		"SET default_transaction_isolation = 'repeatable read'",
-		"SET TRANSACTION READ ONLY",
 	}
 
 	for _, sql := range sqls {

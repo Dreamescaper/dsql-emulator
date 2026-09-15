@@ -89,18 +89,20 @@ func (c *Classifier) Classify(sql string) (Result, error) {
 			continue
 		}
 
-		for _, rule := range c.ruleset.Unsupported {
-			if matches(rule, node) {
-				return Result{Verdict: Verdict{RuleID: rule.ID, Code: rule.Code, Message: rule.Message}}, nil
-			}
-		}
-
+		// Isolation is checked first: DSQL reports a specific level for an
+		// unsupported isolation request even though it refuses the SET itself.
 		if level, unsupported := unsupportedIsolation(node, c.ruleset.Isolation.Supported); unsupported {
 			return Result{Verdict: Verdict{
 				RuleID:  "isolation",
 				Code:    "0A000",
 				Message: "Unsupported isolation level: " + level,
 			}}, nil
+		}
+
+		for _, rule := range c.ruleset.Unsupported {
+			if matches(rule, node) {
+				return Result{Verdict: Verdict{RuleID: rule.ID, Code: rule.Code, Message: rule.Message}}, nil
+			}
 		}
 
 		result.Kinds = append(result.Kinds, kindOf(node))

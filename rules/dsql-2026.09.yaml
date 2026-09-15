@@ -7,112 +7,145 @@ unsupported:
   - id: truncate
     stmt: truncate_stmt
     code: "0A000"
-    message: "TRUNCATE is not supported; use DELETE FROM instead"
+    message: "unsupported statement: Truncate"
 
   - id: extensions
     stmt: create_extension_stmt
     code: "0A000"
-    message: "PostgreSQL extensions are not supported"
+    message: "unsupported statement: CreateExtension"
 
   - id: triggers
     stmt: create_trig_stmt
     code: "0A000"
-    message: "triggers are not supported; implement logic in the application"
+    message: "CREATE TRIGGER not supported"
 
   - id: create_database
     stmt: createdb_stmt
     code: "0A000"
-    message: "Aurora DSQL supports a single database named postgres"
+    message: "unsupported statement: Createdb"
 
   - id: temporary_table
     stmt: create_stmt
     relpersistence: ["t"]
     code: "0A000"
-    message: "temporary tables are not supported"
+    message: "TEMPORARY or TEMP table not supported for CREATE TABLE"
 
   - id: unlogged_table
     stmt: create_stmt
     relpersistence: ["u"]
     code: "0A000"
-    message: "unlogged tables are not supported"
+    message: "UNLOGGED table not supported for CREATE TABLE"
 
   - id: serial
     stmt: create_stmt
     column_type: ["serial", "bigserial", "smallserial"]
+    code: "42704"
+    message: 'type "serial" does not exist'
+
+  - id: identity_cache
+    stmt: create_stmt
+    identity_cache_min: 65536
+    cache_allow: [1]
     code: "0A000"
-    message: "serial types are not supported; use GENERATED ... AS IDENTITY or a uuid"
+    message: "identity column is not supported without an explicit cache size; define CACHE greater than or equal to 65536 or equal to 1"
 
   - id: materialized_view
     stmt: create_table_as_stmt
     objtype: ["OBJECT_MATVIEW"]
     code: "0A000"
-    message: "materialized views are not supported"
+    message: "unsupported statement: CreateTableAs"
 
   - id: create_table_as
     stmt: create_table_as_stmt
     objtype: ["OBJECT_TABLE"]
     code: "0A000"
-    message: "CREATE TABLE AS is not supported"
+    message: "unsupported statement: CreateTableAs"
 
   - id: enum_type
     stmt: create_enum_stmt
     code: "0A000"
-    message: "custom types are not supported"
+    message: "CREATE TYPE not supported"
 
   - id: composite_type
     stmt: composite_type_stmt
     code: "0A000"
-    message: "custom types are not supported"
+    message: "unsupported statement: CompositeType"
 
   - id: range_type
     stmt: create_range_stmt
     code: "0A000"
-    message: "custom types are not supported"
+    message: "unsupported statement: CreateRange"
 
-  - id: domain_type
-    stmt: create_domain_stmt
+  - id: sequence_cache
+    stmt: create_seq_stmt
+    sequence_cache_min: 65536
+    cache_allow: [1]
     code: "0A000"
-    message: "custom types are not supported"
+    message: "CREATE SEQUENCE is not supported without an explicit cache size; define CACHE greater than or equal to 65536 or equal to 1"
 
   - id: tablespace
     stmt: create_table_space_stmt
     code: "0A000"
-    message: "tablespaces are not supported"
+    message: "unsupported statement: CreateTableSpace"
 
   - id: foreign_table
     stmt: create_foreign_table_stmt
     code: "0A000"
-    message: "foreign tables are not supported"
+    message: "unsupported statement: CreateForeignTable"
 
   - id: vacuum
     stmt: vacuum_stmt
     code: "0A000"
-    message: "VACUUM is not supported"
+    message: "unsupported VACUUM statement"
 
   - id: listen
     stmt: listen_stmt
     code: "0A000"
-    message: "LISTEN is not supported"
+    message: "unsupported statement: Listen"
 
   - id: notify
     stmt: notify_stmt
     code: "0A000"
-    message: "NOTIFY is not supported"
+    message: "unsupported statement: Notify"
 
   - id: unlisten
     stmt: unlisten_stmt
     code: "0A000"
-    message: "UNLISTEN is not supported"
+    message: "unsupported statement: Unlisten"
 
   - id: alter_system
     stmt: alter_system_stmt
     code: "0A000"
-    message: "ALTER SYSTEM is not supported"
+    message: "unsupported statement: AlterSystem"
 
-  - id: create_function
-    stmt: create_function_stmt
+  - id: set_transaction
+    stmt: variable_set_stmt
+    set_name: ["TRANSACTION", "SESSION CHARACTERISTICS"]
     code: "0A000"
-    message: "user-defined functions are not supported"
+    message: 'setting configuration parameter "TRANSACTION" not supported'
+
+  - id: sync_index
+    stmt: index_stmt
+    code: "0A000"
+    message: "unsupported mode. please use CREATE INDEX ASYNC."
+
+  - id: savepoint
+    stmt: transaction_stmt
+    txn_kind: ["TRANS_STMT_SAVEPOINT"]
+    code: "0A000"
+    message: "unsupported transaction statement: SAVEPOINT"
+
+  - id: release_savepoint
+    stmt: transaction_stmt
+    txn_kind: ["TRANS_STMT_RELEASE"]
+    code: "0A000"
+    message: "unsupported transaction statement: RELEASE"
+
+  - id: create_function_language
+    stmt: create_function_stmt
+    language_not: ["sql"]
+    code: "0A000"
+    message: "only LANGUAGE sql functions are supported"
 
 isolation:
   supported: ["repeatable read"]

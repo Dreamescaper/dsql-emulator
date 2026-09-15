@@ -39,9 +39,20 @@ type Rule struct {
 	ColumnType     []string `yaml:"column_type"`
 	Objtype        []string `yaml:"objtype"`
 	TxnKind        []string `yaml:"txn_kind"`
-	Code           string   `yaml:"code"`
-	Message        string   `yaml:"message"`
-	Since          string   `yaml:"since"`
+	// SetName matches the parameter named by SET, for example TRANSACTION.
+	SetName []string `yaml:"set_name"`
+	// LanguageNot lists the languages a function may use; any other language
+	// matches the rule.
+	LanguageNot []string `yaml:"language_not"`
+	// SequenceCacheMin and IdentityCacheMin reject a sequence, or an identity
+	// column, whose CACHE is missing or smaller than the minimum, unless the
+	// value appears in CacheAllow.
+	SequenceCacheMin *int   `yaml:"sequence_cache_min"`
+	IdentityCacheMin *int   `yaml:"identity_cache_min"`
+	CacheAllow       []int  `yaml:"cache_allow"`
+	Code             string `yaml:"code"`
+	Message          string `yaml:"message"`
+	Since            string `yaml:"since"`
 }
 
 // Limits are the per-transaction caps enforced by the session state machine.

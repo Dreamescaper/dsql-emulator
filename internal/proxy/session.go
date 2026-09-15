@@ -29,6 +29,12 @@ type session struct {
 	txStatus byte
 	skipSync bool
 
+	// statements maps a prepared statement name to the kinds of the statement
+	// it holds. Transaction rules are enforced when a statement is bound, not
+	// when it is parsed, because clients cache prepared statements and re-run
+	// them without sending Parse again.
+	statements map[string][]classify.Kind
+
 	fromClient   atomic.Int64
 	fromUpstream atomic.Int64
 }
@@ -140,6 +146,10 @@ func (s *session) pumpFrontend() {
 			s.handleQuery(msg)
 		case 'P':
 			s.handleParse(msg)
+		case 'B':
+			s.handleBind(msg)
+		case 'C':
+			s.handleClose(msg)
 		default:
 			s.forward(msg)
 		}
@@ -174,6 +184,8 @@ func (s *session) handleQuery(msg wire.Message) {
 	s.forward(msg)
 }
 
+// handleParse refuses statements the dialect does not allow, and remembers the
+// kinds of the rest so the rules can be applied when they run.
 func (s *session) handleParse(msg wire.Message) {
 	decoded, err := wire.DecodeFrontend(msg.Type, msg.Body)
 	if err != nil {
@@ -188,16 +200,61 @@ func (s *session) handleParse(msg wire.Message) {
 
 	result, err := s.classifier.Classify(parse.Query)
 	if err != nil {
+		// Unparseable SQL is not evidence of an incompatibility; let the
+		// backend answer it. Its kinds are unknown, so it is never admitted.
+		delete(s.statements, parse.Name)
 		s.forward(msg)
 		return
 	}
 	if result.Verdict.Rejected() {
+		delete(s.statements, parse.Name)
 		s.reject(result.Verdict.Code, result.Verdict.Message, result.Verdict.RuleID, true)
 		return
 	}
-	if v, refused := s.tracker.Admit(result.Kinds, time.Now()); refused {
+
+	s.statements[parse.Name] = result.Kinds
+	s.forward(msg)
+}
+
+// handleBind applies the transaction rules at execution time. The statement
+// itself was already checked when it was parsed.
+func (s *session) handleBind(msg wire.Message) {
+	decoded, err := wire.DecodeFrontend(msg.Type, msg.Body)
+	if err != nil {
+		s.forward(msg)
+		return
+	}
+	bind, ok := decoded.(*pgproto3.Bind)
+	if !ok {
+		s.forward(msg)
+		return
+	}
+
+	kinds, known := s.statements[bind.PreparedStatement]
+	if !known {
+		s.forward(msg)
+		return
+	}
+	if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
 		s.reject(v.Code, v.Message, v.Rule, true)
 		return
+	}
+	s.forward(msg)
+}
+
+func (s *session) handleClose(msg wire.Message) {
+	decoded, err := wire.DecodeFrontend(msg.Type, msg.Body)
+	if err != nil {
+		s.forward(msg)
+		return
+	}
+	closeMsg, ok := decoded.(*pgproto3.Close)
+	if !ok {
+		s.forward(msg)
+		return
+	}
+	if closeMsg.ObjectType == 'S' {
+		delete(s.statements, closeMsg.Name)
 	}
 	s.forward(msg)
 }

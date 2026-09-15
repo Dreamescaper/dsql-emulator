@@ -141,7 +141,7 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 
 	t.Run("rejects serial column", func(t *testing.T) {
 		_, err := conn.Exec(ctx, "CREATE TABLE rejected_serial (id serial PRIMARY KEY)")
-		assertSQLState(t, err, "0A000")
+		assertSQLState(t, err, "42704")
 	})
 
 	t.Run("connection usable after rejection", func(t *testing.T) {

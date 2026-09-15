@@ -1,0 +1,258 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "select_one",
+      "group": "supported",
+      "steps": [
+        "SELECT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "show_transaction_isolation",
+      "group": "supported",
+      "steps": [
+        "SHOW transaction_isolation"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SHOW",
+          "columns": [
+            "transaction_isolation"
+          ],
+          "rows": [
+            [
+              "repeatable read"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "select_version",
+      "group": "supported",
+      "note": "record the server_version string",
+      "steps": [
+        "SELECT version()"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "version"
+          ],
+          "rows": [
+            [
+              "PostgreSQL 16"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "insert_returning",
+      "group": "supported",
+      "steps": [
+        "INSERT INTO baseline_idx (id, value) VALUES ('00000000-0000-0000-0000-0000000000dd', 'v1') ON CONFLICT (id) DO NOTHING RETURNING value"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1",
+          "columns": [
+            "value"
+          ],
+          "rows": [
+            [
+              "v1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "select_count",
+      "group": "supported",
+      "steps": [
+        "SELECT count(*) FROM baseline_idx"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "update_row",
+      "group": "supported",
+      "steps": [
+        "UPDATE baseline_idx SET value = 'v2' WHERE id = '00000000-0000-0000-0000-0000000000dd'"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "UPDATE 1"
+        }
+      ]
+    },
+    {
+      "name": "delete_row",
+      "group": "supported",
+      "steps": [
+        "DELETE FROM baseline_idx WHERE id = '00000000-0000-0000-0000-0000000000dd'"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "DELETE 1"
+        }
+      ]
+    },
+    {
+      "name": "cte",
+      "group": "supported",
+      "steps": [
+        "WITH x AS (SELECT 1 AS n) SELECT n FROM x"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "n"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "join",
+      "group": "supported",
+      "steps": [
+        "SELECT p.name FROM baseline_parent p JOIN baseline_child c ON c.parent_id = p.id"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 0",
+          "columns": [
+            "name"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "foreign_key_insert",
+      "group": "supported",
+      "steps": [
+        "INSERT INTO baseline_child (id, parent_id) VALUES ('00000000-0000-0000-0000-0000000000ee', '00000000-0000-0000-0000-0000000000aa')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1"
+        }
+      ]
+    },
+    {
+      "name": "foreign_key_violation",
+      "group": "supported",
+      "steps": [
+        "INSERT INTO baseline_child (id, parent_id) VALUES ('00000000-0000-0000-0000-0000000000ff', '00000000-0000-0000-0000-0000000000ff')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "23503",
+          "message": "insert or update on table \"baseline_child\" violates foreign key constraint \"baseline_child_parent_id_fkey\""
+        }
+      ]
+    },
+    {
+      "name": "identity_column",
+      "group": "supported",
+      "steps": [
+        "CREATE TABLE baseline_identity (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value text)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "identity column is not supported without an explicit cache size. please define CACHE greater than or equal to 65536 or equal to 1"
+        }
+      ]
+    },
+    {
+      "name": "deferrable_foreign_key",
+      "group": "supported",
+      "steps": [
+        "CREATE TABLE baseline_deferred (id int PRIMARY KEY, parent_id uuid REFERENCES baseline_parent(id) DEFERRABLE INITIALLY DEFERRED)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_table_add_column",
+      "group": "supported",
+      "steps": [
+        "ALTER TABLE baseline_idx ADD COLUMN extra text"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "ALTER TABLE"
+        }
+      ]
+    },
+    {
+      "name": "drop_table",
+      "group": "supported",
+      "steps": [
+        "DROP TABLE baseline_drop_me"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "DROP TABLE"
+        }
+      ]
+    }
+  ]
+}

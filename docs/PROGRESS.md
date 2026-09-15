@@ -6,10 +6,10 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**M2 complete.** On top of the M1 classifier, the emulator now enforces Aurora
-DSQL's transaction rules per session: fixed `REPEATABLE READ`, one DDL per
-transaction, DDL/DML separation, the 3000-row DML cap, and the 30-minute
-transaction age limit. Unit and container-backed integration tests pass.
+**M7 complete.** The baseline was recorded against a real cluster and the
+ruleset reconciled: the emulator now reproduces all 53 probes exactly, with only
+four deliberate, documented divergences (the M3 aborted-transaction behavior and
+the M6 index/`sys.jobs` work).
 
 Last updated: 2026-09-15.
 
@@ -34,6 +34,152 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### M7 (part 2b) — golden fixtures split by group (2026-09-15)
+
+Split the single `test/conformance/golden/dsql.json` into one fixture per case
+group (`unsupported`, `backlog`, `isolation`, `transaction`, `supported`,
+`index`) so no file grows without bound as the suite does.
+
+- `conformance.SaveDir` writes one fixture per group and removes stale fixtures
+  first, so removing a group cannot leave phantom cases behind.
+- `conformance.LoadDir` merges the fixtures, rejects duplicate case names across
+  files, and rejects files from a different suite.
+- `cmd/dsql-baseline` now takes `--out-dir` (default `test/conformance/golden`)
+  instead of `--out`; `make baseline` uses `GOLDEN_DIR`.
+- `test/conformance` loads the directory and honours `GOLDEN_DIR`.
+
+Verification: unit tests `TestSaveDirAndLoadDirRoundTrip`,
+`TestSaveDirReplacesStaleFixtures`, `TestLoadDirRejectsDuplicateCaseNames`, and
+`TestLoadDirMissingDirectory`; the integration run still reports
+`53 cases match the golden record`.
+
+### M7 (part 2) — baseline recorded and ruleset reconciled (2026-09-15)
+
+Recorded `test/conformance/golden/` (one fixture per case group) from a real
+Aurora DSQL cluster
+(`eu-central-1`, server version `PostgreSQL 16`) and reconciled the ruleset
+against it. The cluster was left clean: `--cleanup-only` reports no `baseline_`
+objects.
+
+Ruleset and comparator changes:
+
+- New predicates `set_name`, `language_not`, `sequence_cache_min`,
+  `identity_cache_min`, and `cache_allow`, plus the matcher logic for them.
+- `SET TRANSACTION` (and `SESSION CHARACTERISTICS`) is now refused with `0A000`.
+- Savepoints and `RELEASE SAVEPOINT` are refused with `0A000`.
+- Synchronous `CREATE INDEX` is refused with `0A000` (`ASYNC` required).
+- `CREATE SEQUENCE` and identity columns are refused unless `CACHE >= 65536` or
+  `CACHE = 1`.
+- `serial` now reports `42704` (type does not exist), matching DSQL.
+- The `CREATE DOMAIN` rule was removed: domains are supported.
+- The `CREATE FUNCTION` rule was narrowed to non-`sql` languages; `LANGUAGE sql`
+  is supported.
+- Rule messages were updated to mirror DSQL's wording.
+- Isolation is now checked before the general rules, so an unsupported level
+  still reports "Unsupported isolation level: X" even though DSQL refuses the
+  whole `SET`.
+
+Harness changes:
+
+- `--token-file` reads the token from a file so it need not be pasted into a
+  shell history or chat; `dsql.token` and `*.token` are gitignored.
+- `--cleanup-only` drops the suite's objects and then fails if any `baseline_`
+  object remains, using the new `conformance.Leftovers`.
+- Cleanup uses `DROP DOMAIN` (DSQL rejects `DROP TYPE` for domains) and no
+  longer issues drops for objects that can never be created.
+- `RecordedCase` no longer embeds the whole `Case`; the golden file stores only
+  the case name and observations, and the comparator takes suite metadata from
+  the emulator's copy so editing the suite does not require re-recording.
+
+Verification:
+
+```
+gofmt -l .                                 # no output
+go build ./... && go vet ./... && go vet -tags integration ./...   # ok
+go test ./...                              # ok: all internal packages
+go test -tags integration -count=1 ./test/...                      # ok
+go test -tags integration -count=1 -run TestConformanceAgainstEmulator ./test/conformance/
+```
+
+The conformance run reports `53 cases match the golden record`. Eight enforced
+divergences found by the first diff were fixed; the remaining reported
+differences are the intentional `KnownGap` cases:
+
+- `row_cap` — DSQL fails the statement that crosses the cap and aborts the
+  transaction (`54000` then `25P02`); the emulator lets the statement commit and
+  refuses the next one (M3).
+- `read_only` — the `SET` is now refused, but the aborted-transaction state is
+  not modelled (M3).
+- `create_index_async` and `sys_jobs` (M6).
+
+Deliberate limitations:
+
+- The baseline reflects one cluster in one region at one point in time; re-run
+  `make baseline` as DSQL evolves.
+- OCC conflicts are not covered: the suite uses a single connection, so
+  `OC000` codes and commit-time conflict outcomes remain unverified.
+- Non-`sql` function languages, cached identity/sequence acceptance,
+  `ROLLBACK TO SAVEPOINT`, and `SET default_transaction_isolation` are assumed
+  or narrow; probe cases for each were added and will be recorded next run.
+
+### M7 (part 1) — conformance harness and golden-record plumbing (2026-09-15)
+
+Delivered:
+
+- `internal/conformance/` — the probe suite plus recording and comparison.
+  `DefaultSuite` defines 53 cases across `unsupported`, `backlog`, `isolation`,
+  `transaction`, `supported`, and `index` groups, each with the schema it needs
+  and a `baseline_`-prefixed cleanup list. `Observe` captures outcome, SQLSTATE,
+  message, command tag, columns, and rows.
+- `cmd/dsql-baseline/` — records a golden record from a real cluster. Takes
+  `--host`/`--token` (`DSQL_TOKEN`), builds a TLS DSN, prints the suite, and
+  writes JSON. Supports `--dry-run`, `--sslmode`, and `--label`.
+- `test/conformance/` — replays the suite through the emulator and diffs against
+  the golden record; `KnownGap` and advisory message differences are reported
+  rather than enforced.
+- `Makefile` — `make baseline`, `make baseline-dry-run`, `make conformance`.
+
+Bug found and fixed while validating the harness:
+
+- **Transaction rules were missed for cached prepared statements.** Clients such
+  as pgx prepare a statement once and then re-run it with Bind/Execute and no
+  Parse. `BEGIN` reached the emulator as Bind-only after its first use, so the
+  tracker never opened a transaction, and a DML after DDL was wrongly allowed.
+  Rules are now applied on **Bind** (execution) instead of Parse, with a
+  per-session statement-name map. `handleParse` still enforces the dialect rules
+  and records each statement's kinds; `handleClose` removes them. Regression
+  test: `TestSessionTracksReusedPreparedStatements`.
+
+Verification:
+
+```
+gofmt -l .                                 # no output
+go build ./...                             # ok
+go vet ./...  && go vet -tags integration ./...   # ok
+go test ./...                              # ok: internal/{classify,conformance,proxy,txn,wire}
+go test -tags integration -count=1 ./test/conformance/
+```
+
+The integration run passes `records every step and cleans up`: all 53 cases
+produce one observation per step, and the leftover check finds no `baseline_`
+tables, sequences, types, or schemas. The golden comparison skips cleanly when
+no record is present.
+
+Emulator behavior observed during that run (pre-baseline, so unconfirmed against
+real DSQL): the 21 unsupported-statement cases and both isolation cases return
+`0A000`; `two_ddl_one_txn`, `ddl_then_dml`, and `row_cap` return `0A000`,
+`0A000`, and `54000`; `CREATE VIEW`, `CREATE SEQUENCE`, `CREATE SCHEMA`, and
+`SAVEPOINT` currently succeed; `create_index_async` and `sys_jobs` fail with
+`42601` and `42P01`, as the known gaps expect.
+
+Deliberate limitations:
+
+- The emulator enforces rules on Bind, so a statement that is parsed but never
+  bound is not counted. That matches what actually executes.
+- Unparseable SQL (for example `CREATE INDEX ASYNC`) has no known kinds and is
+  forwarded without rule checks.
+- The golden record is not yet recorded; all ruleset items remain unverified.
 
 ### M2 — transaction state machine (2026-09-15)
 
@@ -219,14 +365,33 @@ with zero protocol assumptions.
 | 2026-09-15 | Ruleset lives in `rules/` as a package | `go:embed` cannot reach outside its package directory, so the loader and the YAML share `rules/` instead of splitting across `internal/rules` and `rules/`. |
 | 2026-09-15 | Parse errors are forwarded, not rejected | DSQL-only syntax such as `CREATE INDEX ASYNC` does not parse with stock libpg_query. Treating parse failure as incompatibility would wrongly reject valid DSQL. |
 | 2026-09-15 | Extended-protocol rejection drops messages until `Sync` | Mirrors PostgreSQL: after an error the server ignores messages until the next `Sync`, and this keeps the upstream connection in step with the client. |
-| 2026-09-15 | No per-connection prepared-statement tracking in M1 | Classification happens where the SQL text arrives (`Query`, `Parse`), so the name-to-SQL map is not yet needed. |
+| 2026-09-15 | No per-connection prepared-statement tracking in M1 | Not needed while classification happened where SQL text arrives. Superseded in M7: cached statements arrive as Bind with no Parse, so a statement-name map is required after all. |
 | 2026-09-15 | TLS-negotiated connections fall back to raw relay | The emulator does not terminate TLS or hold the upstream key, so it cannot see inside a session the client encrypts end to end. |
 | 2026-09-15 | Pin the backend to REPEATABLE READ via a startup parameter | `SetStartupParameter` rewrites the startup message; an injected `SET` would require a synchronous round trip that deadlocks when the client authenticates with a password. |
-| 2026-09-15 | Row counts come from `CommandComplete`, not statement tracking | The command tag already carries affected rows, so the name-to-SQL map is not needed for the row cap. Tracking is deferred until something else needs it. |
+| 2026-09-15 | Row counts come from `CommandComplete` | The command tag already carries affected rows, so counting does not need statement tracking. The statement map is still needed, but for applying the rules at execution time instead. |
 | 2026-09-15 | Limits are enforced at batch boundaries, not mid-exchange | A batch already executing cannot be un-sent, and a refusal is only safe before forwarding. Crossing the cap therefore fails the *next* batch, and ROLLBACK is always admitted so the client can escape. |
 | 2026-09-15 | M2 split; transaction coordinator deferred to M3 | Auto-rollback and the aborted-transaction state need the same rollback orchestration the OCC adjudicator needs, so building it once avoids doing it twice. |
+| 2026-09-15 | Transaction rules run on Bind, not Parse | Found by the conformance suite: clients cache prepared statements, so after first use `BEGIN` arrives as Bind with no Parse and the rules were silently skipped. Kinds are computed at Parse and admitted at Bind. |
+| 2026-09-15 | Golden record stores no cluster endpoint | The record is committed, so it holds the target label and server version only, never the account's host. |
+| 2026-09-15 | Error messages are advisory in the comparison | Wording drifts between DSQL builds and the emulator; SQLSTATE is the stable contract. Messages are still printed. |
+| 2026-09-15 | `KnownGap` marks accepted divergence | Cases that the emulator is not expected to match yet (index ASYNC, `sys.jobs`) are replayed and reported without failing, so the suite stays honest and green. |
+| 2026-09-15 | Each conformance case is followed by a ROLLBACK | A case can leave a transaction open or aborted; resetting keeps cases independent and the run repeatable. |
+| 2026-09-15 | Conformance runs against the emulator in CI, not DSQL | Only `cmd/dsql-baseline` talks to a real cluster, and only when a developer runs it with a token. The normal test path needs Docker only. |
+| 2026-09-15 | The golden record is committed; the token is not | The record holds only DSQL behavior and the target label, never the endpoint or credentials. `*.token` and `dsql.token` are gitignored. |
+| 2026-09-15 | Golden fixtures are split by case group | A single record would grow without bound; one file per group keeps diffs readable and reviews small. `SaveDir` prunes stale fixtures so the split stays authoritative. |
+| 2026-09-15 | Rules are reconciled to the baseline, not to documentation | Real DSQL diverged from the docs: `CREATE DOMAIN` and `LANGUAGE sql` functions are supported, `SET TRANSACTION` is refused outright, and `serial` fails as `42704`. Recorded behavior wins. |
+| 2026-09-15 | `row_cap` and `read_only` are `KnownGap`s on M3 | DSQL fails the offending statement and aborts the transaction; reproducing that needs the rollback and aborted-state work already planned for M3, so a workaround would be thrown away. |
+| 2026-09-15 | DSQL has two token commands | `generate-db-connect-auth-token` yields a `DbConnect` token that cannot connect as `admin`; `generate-db-connect-admin-auth-token` yields the `DbConnectAdmin` token that can. A non-admin token fails as `08006 access denied`. |
 
 ## Next up
+
+### M7 (part 3) — re-record as the suite grows
+
+- Run `make baseline` again to record the newly added backlog probes (non-`sql`
+  functions, cached identity and sequence, `ROLLBACK TO SAVEPOINT`,
+  `SET default_transaction_isolation`, `SET TRANSACTION ISOLATION LEVEL
+  REPEATABLE READ`).
+- Add concurrent-session probes to pin OCC behavior (`OC000`, `40001`).
 
 ### M3 — transaction coordinator
 
@@ -242,5 +407,6 @@ with zero protocol assumptions.
 
 ### Carried forward
 
-- Verify the provisional ruleset entries against a live cluster (see the PLAN.md
-  verification backlog).
+- Nothing outstanding: the ruleset verification backlog was answered by the
+  baseline (see PLAN.md), except for OCC behavior and the probes added for the
+  next recording.

@@ -1,0 +1,68 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "create_index_sync",
+      "group": "index",
+      "note": "DSQL requires ASYNC; sync should be refused",
+      "steps": [
+        "CREATE INDEX baseline_idx_value ON baseline_idx (value)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported mode. please use CREATE INDEX ASYNC."
+        }
+      ]
+    },
+    {
+      "name": "create_index_async",
+      "group": "index",
+      "steps": [
+        "CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"
+      ],
+      "known_gap": "M6: the emulator does not rewrite CREATE INDEX ASYNC yet",
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE INDEX",
+          "columns": [
+            "job_id"
+          ],
+          "rows": [
+            [
+              "dahhpk2qfbax5dmnsgha3vtjda"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sys_jobs",
+      "group": "index",
+      "steps": [
+        "SELECT count(*) AS n FROM sys.jobs"
+      ],
+      "ignore_rows": true,
+      "known_gap": "M6: sys.jobs is not emulated",
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "n"
+          ],
+          "rows": [
+            [
+              "5"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

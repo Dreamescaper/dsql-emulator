@@ -23,6 +23,21 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.TxnKind) > 0 && !contains(r.TxnKind, txnKind(node)) {
 		return false
 	}
+	if len(r.SetName) > 0 && !contains(r.SetName, setParameter(node)) {
+		return false
+	}
+	if len(r.LanguageNot) > 0 && contains(r.LanguageNot, functionLanguage(node)) {
+		return false
+	}
+	if r.SequenceCacheMin != nil {
+		cache, ok := sequenceCache(node)
+		if !cacheTooSmall(cache, ok, *r.SequenceCacheMin, r.CacheAllow) {
+			return false
+		}
+	}
+	if r.IdentityCacheMin != nil && !hasSmallIdentityCache(node, *r.IdentityCacheMin, r.CacheAllow) {
+		return false
+	}
 	return true
 }
 
@@ -89,7 +104,104 @@ func txnKind(node *pg_query.Node) string {
 	return ""
 }
 
+// setParameter returns the parameter named by a SET statement, such as
+// "TRANSACTION" or "default_transaction_isolation".
+func setParameter(node *pg_query.Node) string {
+	if vs := node.GetVariableSetStmt(); vs != nil {
+		return vs.GetName()
+	}
+	return ""
+}
+
+// functionLanguage returns the LANGUAGE option of a CREATE FUNCTION, or "" when
+// none is given.
+func functionLanguage(node *pg_query.Node) string {
+	fn := node.GetCreateFunctionStmt()
+	if fn == nil {
+		return ""
+	}
+	for _, opt := range fn.GetOptions() {
+		de := opt.GetDefElem()
+		if de == nil || de.GetDefname() != "language" {
+			continue
+		}
+		if s := de.GetArg().GetString_(); s != nil {
+			return s.GetSval()
+		}
+	}
+	return ""
+}
+
+// sequenceCache returns the CACHE option of a CREATE SEQUENCE.
+func sequenceCache(node *pg_query.Node) (int, bool) {
+	seq := node.GetCreateSeqStmt()
+	if seq == nil {
+		return 0, false
+	}
+	return defElemInt(seq.GetOptions(), "cache")
+}
+
+// hasSmallIdentityCache reports whether any identity column in a CREATE TABLE
+// sets a CACHE that is missing or too small.
+func hasSmallIdentityCache(node *pg_query.Node, min int, allow []int) bool {
+	cs := node.GetCreateStmt()
+	if cs == nil {
+		return false
+	}
+	for _, elt := range cs.GetTableElts() {
+		col := elt.GetColumnDef()
+		if col == nil {
+			continue
+		}
+		for _, con := range col.GetConstraints() {
+			c := con.GetConstraint()
+			if c == nil || c.GetContype() != pg_query.ConstrType_CONSTR_IDENTITY {
+				continue
+			}
+			cache, ok := defElemInt(c.GetOptions(), "cache")
+			if cacheTooSmall(cache, ok, min, allow) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// cacheTooSmall reports whether a CACHE value is missing or below min without
+// appearing in allow.
+func cacheTooSmall(cache int, ok bool, min int, allow []int) bool {
+	if !ok {
+		return true
+	}
+	if cache >= min {
+		return false
+	}
+	return !containsInt(allow, cache)
+}
+
+func defElemInt(nodes []*pg_query.Node, name string) (int, bool) {
+	for _, node := range nodes {
+		de := node.GetDefElem()
+		if de == nil || de.GetDefname() != name {
+			continue
+		}
+		if i := de.GetArg().GetInteger(); i != nil {
+			return int(i.GetIval()), true
+		}
+	}
+	return 0, false
+}
+
 func contains(want []string, got string) bool {
+	for _, w := range want {
+		if w == got {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInt(want []int, got int) bool {
 	for _, w := range want {
 		if w == got {
 			return true

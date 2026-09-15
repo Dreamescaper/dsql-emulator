@@ -1,0 +1,171 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "two_ddl_one_txn",
+      "group": "transaction",
+      "steps": [
+        "BEGIN",
+        "CREATE TABLE baseline_txn_a (id int)",
+        "CREATE TABLE baseline_txn_b (id int)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "multiple ddl statements not supported in a transaction"
+        }
+      ]
+    },
+    {
+      "name": "ddl_then_dml",
+      "group": "transaction",
+      "steps": [
+        "BEGIN",
+        "CREATE TABLE baseline_txn_c (id int)",
+        "INSERT INTO baseline_txn_c (id) VALUES (1)"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "ddl and dml are not supported in the same transaction"
+        }
+      ]
+    },
+    {
+      "name": "row_cap",
+      "group": "transaction",
+      "note": "confirm the 3000-row DML cap SQLSTATE",
+      "steps": [
+        "BEGIN",
+        "INSERT INTO baseline_bulk SELECT generate_series(1, 3001)",
+        "SELECT 1"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "54000",
+          "message": "transaction row limit exceeded"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "25P02",
+          "message": "current transaction is aborted, commands ignored until end of transaction block"
+        }
+      ]
+    },
+    {
+      "name": "commit",
+      "group": "transaction",
+      "steps": [
+        "BEGIN",
+        "INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000bb', 'tx')",
+        "COMMIT"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "COMMIT"
+        }
+      ]
+    },
+    {
+      "name": "rollback",
+      "group": "transaction",
+      "steps": [
+        "BEGIN",
+        "INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000cc', 'tx')",
+        "ROLLBACK",
+        "SELECT count(*) FROM baseline_parent WHERE name = 'tx'"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "INSERT 0 1"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "count"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "read_only",
+      "group": "transaction",
+      "steps": [
+        "BEGIN",
+        "SET TRANSACTION READ ONLY",
+        "SELECT 1",
+        "COMMIT"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"TRANSACTION\" not supported"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "25P02",
+          "message": "current transaction is aborted, commands ignored until end of transaction block"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "ROLLBACK"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "recorded_at": "2026-09-15T20:10:52.67035Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "set_transaction_serializable",
+      "group": "isolation",
+      "steps": [
+        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "Unsupported isolation level: SERIALIZABLE"
+        }
+      ]
+    },
+    {
+      "name": "begin_serializable",
+      "group": "isolation",
+      "steps": [
+        "BEGIN ISOLATION LEVEL SERIALIZABLE"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "Unsupported isolation level: SERIALIZABLE"
+        }
+      ]
+    },
+    {
+      "name": "begin_repeatable_read",
+      "group": "isolation",
+      "steps": [
+        "BEGIN ISOLATION LEVEL REPEATABLE READ",
+        "SELECT 1",
+        "COMMIT"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "BEGIN"
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "?column?"
+          ],
+          "rows": [
+            [
+              "1"
+            ]
+          ]
+        },
+        {
+          "outcome": "ok",
+          "command_tag": "COMMIT"
+        }
+      ]
+    }
+  ]
+}

@@ -25,11 +25,15 @@ make vet                # go vet ./...
 make up                 # start PostgreSQL 17 on host port 5433
 make run                # run the emulator (listen 5432 -> upstream 5433)
 make down               # stop Postgres and remove volumes
+make baseline-dry-run   # print the conformance suite without connecting
+make baseline           # record a golden record from a real DSQL cluster
+make conformance        # diff the emulator against the golden record
 ```
 
 Always run `make build`, `make vet`, and `make test` before reporting work done.
-Run `make test-integration` when the change touches the proxy, relay, or wire
-protocol.
+Run `make test-integration` when the change touches the proxy, relay, wire
+protocol, or conformance harness. `make baseline` talks to a real cluster and
+costs money: never run it without an explicit request and a fresh token.
 
 ## Documentation maintenance — required
 
