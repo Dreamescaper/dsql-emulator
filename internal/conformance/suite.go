@@ -186,6 +186,8 @@ func DefaultSuite() Suite {
 		{Name: "create_index_sync", Group: "index", Note: "DSQL requires ASYNC; sync should be refused", Steps: one("CREATE INDEX baseline_idx_value ON baseline_idx (value)")},
 		{Name: "create_index_async", Group: "index", Note: "returns a generated job_id", Steps: one("CREATE INDEX ASYNC IF NOT EXISTS baseline_idx_value_async ON baseline_idx (value)"), IgnoreRows: true},
 		{Name: "sys_jobs", Group: "index", Steps: one("SELECT count(*) AS n FROM sys.jobs"), IgnoreRows: true},
+		{Name: "sys_jobs_columns", Group: "index", Note: "pin the real sys.jobs shape", Steps: one("SELECT * FROM sys.jobs"), IgnoreRows: true, KnownGap: "the emulator's sys.jobs schema is a stand-in; DSQL's is not pinned yet"},
+		{Name: "sys_wait_for_job", Group: "index", Note: "pin the real wait_for_job contract", Steps: one("SELECT sys.wait_for_job((SELECT job_id FROM sys.jobs LIMIT 1))"), KnownGap: "the emulator's wait_for_job signature and result are a stand-in"},
 
 		// Not yet recorded; these answer the remaining backlog questions on
 		// the next baseline run.

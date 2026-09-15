@@ -75,7 +75,7 @@ dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them |
 | Indexes | `CREATE INDEX ASYNC` rewritten and answered with a `job_id`; synchronous `CREATE INDEX` refused |
 | OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
-| Environment | Single `postgres` database, `UTC`, `sys.jobs` present |
+| Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
 ## What it does not do
 
@@ -84,9 +84,13 @@ dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require
   committer without waiting. The outcome matches, the timing does not.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
-- **`sys.jobs` has no lifecycle.** `CREATE INDEX ASYNC` builds the index
-  synchronously and returns a `job_id`, but no job row is recorded and
-  `sys.wait_for_job` is a stub.
+- **`sys.jobs` is a stand-in.** `CREATE INDEX ASYNC` builds the index
+  synchronously and records a completed `INDEX_BUILD` job whose id is derived
+  from the index name (DSQL issues random ids), so the id handed back can be
+  looked up. The table shape and `sys.wait_for_job` are the emulator's own,
+  not DSQL's, and two probes are waiting on a recording to pin them. A
+  `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists returns an
+  id with no row, because no build happened.
 - **The reported version leaks on some paths.** `SELECT version()` and
   `SHOW server_version` are rewritten; `current_setting('server_version')`
   and `server_version_num` report the backing engine.

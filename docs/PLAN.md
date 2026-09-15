@@ -174,6 +174,13 @@ of it on 5432. `docker/init` is what provides `sys.jobs`, the row-cap trigger, a
 role clients connect as, so a container started from this image enforces the
 same rules as the test suite with no extra setup.
 
+`sys.jobs` records an `INDEX_BUILD` job for every `CREATE INDEX ASYNC`, because
+an event trigger registered for `CREATE INDEX` fires for explicit index
+creation but not for the index a `CREATE TABLE` makes for a key. The job id is
+`md5(index name)` on both sides, so the id the emulator returns can be looked
+up without a round trip; DSQL's own ids are random, and its table shape and
+`sys.wait_for_job` contract are not pinned yet.
+
 - `DSQL_PORT` (default 5432) and `DSQL_PG_PORT` (default 5433) move the two
   listeners. `POSTGRES_USER`, `POSTGRES_DB`, and `POSTGRES_HOST_AUTH_METHOD`
   pass through to the backing database; trust is the default so a token works.

@@ -514,6 +514,57 @@ func TestSessionRewritesSerializationFailure(t *testing.T) {
 	}
 }
 
+// TestSessionReturnsDerivedJobIDForAsyncIndex covers the whole Create Index
+// Async path: the statement is rewritten before it reaches the backend, and the
+// job id handed to the client is the one the backing database derives.
+func TestSessionReturnsDerivedJobIDForAsyncIndex(t *testing.T) {
+	ts := newTestSession(t)
+
+	const sql = "CREATE INDEX ASYNC idx ON t (a)"
+
+	ts.send(t, &pgproto3.Parse{Name: "s1", Query: sql})
+	parsed, ok := ts.receiveBackend(t).(*pgproto3.Parse)
+	if !ok {
+		t.Fatal("expected Parse at the backend")
+	}
+	if parsed.Query != "CREATE INDEX idx ON t (a)" {
+		t.Fatalf("backend received %q, expected the ASYNC keyword removed", parsed.Query)
+	}
+	ts.sendBackend(t, &pgproto3.ParseComplete{})
+	if _, ok := ts.receive(t).(*pgproto3.ParseComplete); !ok {
+		t.Fatal("expected ParseComplete at the client")
+	}
+
+	ts.bind(t, "p1", "s1")
+	ts.execute(t, "p1")
+
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("CREATE INDEX")})
+
+	desc, ok := ts.receive(t).(*pgproto3.RowDescription)
+	if !ok {
+		t.Fatal("expected a RowDescription for the job id")
+	}
+	if len(desc.Fields) != 1 || string(desc.Fields[0].Name) != "job_id" {
+		t.Fatalf("got fields %+v want a single job_id column", desc.Fields)
+	}
+
+	row, ok := ts.receive(t).(*pgproto3.DataRow)
+	if !ok {
+		t.Fatal("expected a DataRow carrying the job id")
+	}
+	if got, want := string(row.Values[0]), jobIDForIndex("idx"); got != want {
+		t.Fatalf("job id %q want %q", got, want)
+	}
+
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected the CommandComplete to reach the client")
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected the ReadyForQuery to reach the client")
+	}
+}
+
 func TestSessionRewritesServerVersion(t *testing.T) {
 	ts := newTestSession(t)
 

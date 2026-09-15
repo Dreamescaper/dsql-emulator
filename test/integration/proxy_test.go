@@ -216,7 +216,7 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		}
 	})
 
-	t.Run("async index reports a job id", func(t *testing.T) {
+	t.Run("async index records a job", func(t *testing.T) {
 		var jobID string
 		if err := conn.QueryRow(ctx, "CREATE INDEX ASYNC IF NOT EXISTS widget_async_idx ON widget (name)").Scan(&jobID); err != nil {
 			t.Fatalf("create index async: %v", err)
@@ -225,9 +225,27 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 			t.Fatal("expected a job id")
 		}
 
-		var count int
-		if err := conn.QueryRow(ctx, "SELECT count(*) FROM sys.jobs").Scan(&count); err != nil {
-			t.Fatalf("query sys.jobs: %v", err)
+		// The id handed to the client has to be findable in sys.jobs.
+		var jobType, status string
+		if err := conn.QueryRow(ctx, "SELECT job_type, status FROM sys.jobs WHERE job_id = $1", jobID).
+			Scan(&jobType, &status); err != nil {
+			t.Fatalf("the returned job id is not in sys.jobs: %v", err)
+		}
+		if jobType != "INDEX_BUILD" || status != "COMPLETED" {
+			t.Fatalf("got job_type %q status %q want INDEX_BUILD/COMPLETED", jobType, status)
+		}
+
+		var waited string
+		if err := conn.QueryRow(ctx, "SELECT sys.wait_for_job($1)", jobID).Scan(&waited); err != nil {
+			t.Fatalf("wait_for_job: %v", err)
+		}
+		if waited != "COMPLETED" {
+			t.Fatalf("wait_for_job returned %q want COMPLETED", waited)
+		}
+
+		// The index really exists.
+		if _, err := conn.Exec(ctx, "drop index widget_async_idx"); err != nil {
+			t.Fatalf("the index was not created: %v", err)
 		}
 	})
 

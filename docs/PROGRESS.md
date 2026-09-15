@@ -34,6 +34,40 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### sys.jobs lifecycle for async index builds (2026-09-15)
+
+`CREATE INDEX ASYNC` now leaves a completed `INDEX_BUILD` job in `sys.jobs`, and
+`sys.wait_for_job` reports its status, closing the gap the README listed.
+
+- `docker/init/04-jobs.sql` adds an event trigger registered for `CREATE INDEX`
+  that inserts the job. Registering for `CREATE INDEX` is what keeps it correct:
+  it fires for explicit index creation, including `UNIQUE`, but not for the
+  index a `CREATE TABLE` creates for a primary key or unique constraint
+  (verified against a real PostgreSQL before writing any Go).
+- The job id is `md5(index name)` on both sides. The emulator derives it from
+  the statement it rewrites, so the id handed to the client is findable in
+  `sys.jobs` without reading it back — a round trip that would need the
+  recording-and-swallowing machinery the row cap needed. DSQL's ids are random;
+  deriving ours is the price of that simplicity.
+- `rewriteAsyncIndex` now also extracts the index name, handling quoting,
+  escaped quotes, and schema qualification, with unit tests for each.
+- `sys.jobs.job_id` became `text` to hold the derived id, and `sys.wait_for_job`
+  looks the job up and rejects an unknown id.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`. The integration
+subtest `async index records a job` asserts that the id returned by
+`CREATE INDEX ASYNC` is in `sys.jobs` with `INDEX_BUILD`/`COMPLETED`, that
+`sys.wait_for_job` returns it, and that the index really exists. The conformance
+run still reports `181 cases match the golden record`.
+
+Two probes were added and are unrecorded: `sys_jobs_columns` and
+`sys_wait_for_job`, both known gaps, to pin DSQL's real table shape and contract
+on the next baseline.
+
+Known limitation: `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already
+exists returns a job id with no row, because no build happened.
+
 ### README, MIT license, and the admin role (2026-09-15)
 
 - `README.md` — what the emulator is for, quick starts for the published image,

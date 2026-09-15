@@ -234,11 +234,11 @@ func (s *session) pumpBackend() {
 				}
 				continue
 			}
-			if was, described := s.takeAsyncIndex(); was {
-				if !described {
+			if result := s.takeAsyncIndex(); result != nil {
+				if !result.described {
 					s.writeClient(jobIDRowDescription())
 				}
-				s.writeClient(jobIDDataRow(newJobID()))
+				s.writeClient(jobIDDataRow(result.jobID))
 			}
 		}
 
@@ -320,8 +320,8 @@ func (s *session) handleQuery(msg wire.Message) {
 		return
 	}
 
-	if rewritten, ok := rewriteAsyncIndex(query.String); ok {
-		s.forwardAsyncIndex(msg, query, rewritten, false)
+	if rewritten, indexName, ok := rewriteAsyncIndex(query.String); ok {
+		s.forwardAsyncIndex(msg, query, rewritten, indexName, false)
 		return
 	}
 
@@ -382,8 +382,8 @@ func (s *session) handleParse(msg wire.Message) {
 		return
 	}
 
-	if rewritten, ok := rewriteAsyncIndex(parse.Query); ok {
-		s.forwardAsyncIndex(msg, parse, rewritten, true)
+	if rewritten, indexName, ok := rewriteAsyncIndex(parse.Query); ok {
+		s.forwardAsyncIndex(msg, parse, rewritten, indexName, true)
 		return
 	}
 
@@ -776,7 +776,7 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 // forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
 // the PostgreSQL parser cannot read. It applies the transaction rules as DDL,
 // then forwards the rewritten statement so the index is built synchronously.
-func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten string, extended bool) {
+func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten, indexName string, extended bool) {
 	kinds := []classify.Kind{classify.KindDDL}
 
 	if s.aborted() {
@@ -788,8 +788,15 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 		return
 	}
 
+	jobID := jobIDForIndex(indexName)
+	if jobID == "" {
+		// The name could not be read, so the derived id would not match the row
+		// the database records; hand back an opaque one instead.
+		jobID = newJobID()
+	}
+
 	s.stateMu.Lock()
-	s.asyncIndex = &asyncIndexResult{}
+	s.asyncIndex = &asyncIndexResult{jobID: jobID}
 	s.stateMu.Unlock()
 
 	switch m := frontend.(type) {
@@ -859,6 +866,7 @@ type statementInfo struct {
 // asyncIndexResult tracks the synthesized result of an async index build.
 type asyncIndexResult struct {
 	described bool
+	jobID     string
 }
 
 func (s *session) markAsyncIndexDescribed() bool {
@@ -871,15 +879,12 @@ func (s *session) markAsyncIndexDescribed() bool {
 	return true
 }
 
-func (s *session) takeAsyncIndex() (bool, bool) {
+func (s *session) takeAsyncIndex() *asyncIndexResult {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if s.asyncIndex == nil {
-		return false, false
-	}
-	described := s.asyncIndex.described
+	result := s.asyncIndex
 	s.asyncIndex = nil
-	return true, described
+	return result
 }
 
 // jobIDRowDescription describes the single text column DSQL returns from
