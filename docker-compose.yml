@@ -5,6 +5,9 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
+      # DSQL clients authenticate with a short-lived IAM token. A local trust
+      # setup accepts any password, so a token connects without being validated.
+      POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "5433:5432"
     volumes:

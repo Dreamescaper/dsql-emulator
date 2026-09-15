@@ -401,3 +401,67 @@ func assertSQLState(t *testing.T, err error, want string) {
 		t.Fatalf("got SQLSTATE %s want %s (%s)", pgErr.Code, want, pgErr.Message)
 	}
 }
+
+// TestTokenAuthThroughProxy checks the DSQL-shaped setup: TLS is required and
+// the password is an opaque token that the backing database, on trust, accepts.
+func TestTokenAuthThroughProxy(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := postgres.Run(ctx, "postgres:17-alpine",
+		postgres.WithDatabase("postgres"),
+		postgres.WithUsername("postgres"),
+		postgres.WithInitScripts("../../docker/init/01-sys.sql"),
+		testcontainers.WithEnv(map[string]string{"POSTGRES_HOST_AUTH_METHOD": "trust"}),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(60*time.Second),
+		),
+	)
+	if err != nil {
+		t.Fatalf("start postgres: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		t.Fatalf("container host: %v", err)
+	}
+	port, err := container.MappedPort(ctx, "5432/tcp")
+	if err != nil {
+		t.Fatalf("container port: %v", err)
+	}
+
+	tlsConfig, err := proxy.SelfSignedTLSConfig("localhost")
+	if err != nil {
+		t.Fatalf("tls config: %v", err)
+	}
+	p, err := proxy.New(proxy.Config{
+		Listen:   "127.0.0.1:0",
+		Upstream: net.JoinHostPort(host, port.Port()),
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TLS:      tlsConfig,
+	})
+	if err != nil {
+		t.Fatalf("new proxy: %v", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { _ = p.Run(runCtx) }()
+
+	// A token that is not a real password still connects.
+	dsn := "postgres://postgres:an-iam-token-not-a-password@" + p.Addr() + "/postgres?sslmode=require"
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect with a token: %v", err)
+	}
+	defer conn.Close(context.Background())
+
+	var one int
+	if err := conn.QueryRow(ctx, "select 1").Scan(&one); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if one != 1 {
+		t.Fatalf("got %d want 1", one)
+	}
+}

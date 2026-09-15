@@ -276,7 +276,7 @@ fixture to keep forever.
 | M1 | AST classifier + rejection with real SQLSTATEs, versioned YAML rules | done |
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
-| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | in progress (TLS and version done; IAM token auth pending) |
+| M4 | Auth/TLS/version emulation; single DB; UTC/C collation | done (tokens accepted via a trust-backed upstream, not validated) |
 | M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | in progress (modes 1 and 2 done; adjudicator and FK fixtures pending) |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | done |
 | M7 | Conformance harness: golden record + emulator diff | done |

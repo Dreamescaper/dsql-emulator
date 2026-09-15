@@ -34,6 +34,26 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M4 (part 2) — IAM token acceptance (2026-09-15)
+
+DSQL clients present a short-lived IAM token as the password. The emulator
+relays authentication to the backing server, so `docker-compose.yml` now sets
+`POSTGRES_HOST_AUTH_METHOD: trust`, and a DSQL-configured application connects
+unchanged with any token.
+
+This is a configuration answer rather than token validation: the token is never
+checked, and a password-authenticated backing server would reject it. Owning the
+client authentication exchange would need a SCRAM handshake on the upstream
+connection, which is out of scope here. Recorded in PLAN.md.
+
+Verification: the integration test `TestTokenAuthThroughProxy` starts a
+trust-backed PostgreSQL, connects through the emulator with `sslmode=require`
+using a password that is not a real credential, and runs a query.
+
+With this, every milestone in PLAN.md is either done or has its remaining work
+written down: implicit-transaction wrapping (M3 remainder), the OCC adjudicator
+and FK conflict fixtures (M5), and multi-session golden support.
+
 ### M5 — optimistic concurrency control (2026-09-15)
 
 - **Mode 1, native delegation.** The upstream already runs at `REPEATABLE READ`,
