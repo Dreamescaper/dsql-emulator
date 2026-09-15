@@ -34,6 +34,32 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Image publishes on release (2026-09-15)
+
+The `image` workflow now runs on `release: published` instead of on pushes to
+`main`, so an image always corresponds to a released version. Tags are the
+release version (`1.2.3` from tag `v1.2.3`) and `latest` for a non-prerelease;
+a prerelease gets only its version tag. Publishing still builds `linux/amd64`
+and `linux/arm64` and authenticates with the repository's own token, so no
+personal package scope is needed.
+
+The `test` workflow still runs on every push and pull request; only publishing
+is restricted to releases.
+
+### Run formatting, vet, unit, integration, and image checks in CI (2026-09-15)
+
+Added `.github/workflows/test.yml` with three jobs: `unit` (gofmt gate,
+`go build`, `go vet` on both tag sets, `go test -race ./...`), `integration`
+(the container-backed suites, which use the committed golden fixtures and never
+a real cluster), and `image-build` (builds the Dockerfile with `push: false`, so
+a broken image fails a pull request while the `image` workflow owns publishing).
+It uses least-privilege permissions, per-job timeouts, and cancel-in-progress
+concurrency.
+
+Verification: both workflow files parse as YAML, and every command in the job
+steps was run locally and passes, including `go test -tags integration
+./test/...`. GitHub Actions itself cannot be executed locally.
+
 ### Backing engine set to PostgreSQL 16 (2026-09-15)
 
 Switched the backing database from 17 to 16 in the Dockerfile, compose file,

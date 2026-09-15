@@ -181,8 +181,10 @@ suite with no extra setup.
   `pg_isready` healthcheck on 5432.
 - Build and publish with `make docker-build` and `make docker-push`
   (`IMAGE`/`TAG`, default `ghcr.io/dreamescaper/dsql-emulator:latest`). The
-  `image` workflow publishes `linux/amd64` and `linux/arm64` to GHCR on `main`
-  and version tags, using the repository's own token.
+  `image` workflow publishes `linux/amd64` and `linux/arm64` to GHCR only when
+  a release is created, using the repository's own token, and tags the image
+  with the release version (for example `1.2.3`) plus `latest` for a
+  non-prerelease. Pushes to `main` do not publish.
 
 With testcontainers-go:
 
