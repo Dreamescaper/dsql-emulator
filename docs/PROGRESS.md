@@ -34,6 +34,26 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### README, MIT license, and the admin role (2026-09-15)
+
+- `README.md` — what the emulator is for, quick starts for the published image,
+  running from source, and testcontainers, a table of what it emulates, an
+  explicit list of what it does **not** do, configuration, the conformance
+  harness, and prior art. It carries a Stand With Ukraine badge.
+- `LICENSE` — MIT.
+- Writing the README exposed a real bug: the Docker example connects as DSQL's
+  `admin` user, but the backing database only ever had `postgres`, so any
+  DSQL-shaped client failed with `role "admin" does not exist`. Added
+  `docker/init/03-admin.sql`, which creates the role, and verified against the
+  rebuilt image that `admin` connects over TLS with a token and that the row cap
+  still applies.
+- The container-backed tests now glob `docker/init/*.sql` instead of naming
+  scripts, so a new init file cannot be missed the way `03-admin.sql` would have
+  been.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, and `go test -tags integration ./test/...` all pass.
+
 ### Automatic release versions, without a personal token (2026-09-15)
 
 Added a `release` workflow you run from the Actions tab with a

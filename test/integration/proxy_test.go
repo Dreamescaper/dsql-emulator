@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,17 @@ import (
 	"github.com/Dreamescaper/dsql-emulator/internal/proxy"
 )
 
+// initScripts returns every backing-database init script, so the tests apply
+// the same setup as the published image.
+func initScripts(t *testing.T) []string {
+	t.Helper()
+	scripts, err := filepath.Glob("../../docker/init/*.sql")
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("find init scripts: %v (%d found)", err, len(scripts))
+	}
+	return scripts
+}
+
 func TestPgxRoundTripThroughProxy(t *testing.T) {
 	ctx := context.Background()
 
@@ -28,9 +40,7 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
-		postgres.WithInitScripts(
-			"../../docker/init/01-sys.sql",
-			"../../docker/init/02-rowcap.sql"),
+		postgres.WithInitScripts(initScripts(t)...),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -429,7 +439,7 @@ func TestTokenAuthThroughProxy(t *testing.T) {
 	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
-		postgres.WithInitScripts("../../docker/init/01-sys.sql"),
+		postgres.WithInitScripts(initScripts(t)...),
 		testcontainers.WithEnv(map[string]string{"POSTGRES_HOST_AUTH_METHOD": "trust"}),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").

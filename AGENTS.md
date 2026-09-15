@@ -15,9 +15,10 @@ design and roadmap, and `docs/PROGRESS.md` for status.
   `export PATH="/opt/homebrew/bin:$PATH"`.
 - Docker is required for integration tests.
 - The backing database needs the init scripts in `docker/init/` (the `sys`
-  schema and the row-cap trigger). `docker-compose.yml` mounts them, and the
-  container-backed tests pass them to testcontainers. A hand-rolled PostgreSQL
-  without them will not enforce the DML row cap.
+  schema, the row-cap trigger, and the `admin` role clients connect as).
+  `docker-compose.yml` mounts them, and the container-backed tests pass every
+  script in the directory to testcontainers. A hand-rolled PostgreSQL without
+  them will not enforce the DML row cap or accept the `admin` user.
 
 ## Commands
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -122,6 +123,17 @@ func TestConformanceAgainstEmulator(t *testing.T) {
 	})
 }
 
+// initScripts returns every backing-database init script, so the tests apply
+// the same setup as the published image.
+func initScripts(t *testing.T) []string {
+	t.Helper()
+	scripts, err := filepath.Glob("../../docker/init/*.sql")
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("find init scripts: %v (%d found)", err, len(scripts))
+	}
+	return scripts
+}
+
 func startEmulator(t *testing.T, ctx context.Context) (*pgx.Conn, conformance.Connector) {
 	t.Helper()
 
@@ -129,9 +141,7 @@ func startEmulator(t *testing.T, ctx context.Context) (*pgx.Conn, conformance.Co
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
-		postgres.WithInitScripts(
-			"../../docker/init/01-sys.sql",
-			"../../docker/init/02-rowcap.sql"),
+		postgres.WithInitScripts(initScripts(t)...),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).

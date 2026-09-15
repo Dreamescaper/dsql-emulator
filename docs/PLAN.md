@@ -170,9 +170,9 @@ SQLSTATE: 40001
 
 `Dockerfile` builds a single image that serves the whole emulator: PostgreSQL on
 an internal port with the `docker/init` scripts applied, and the proxy in front
-of it on 5432. `docker/init` is what provides `sys.jobs` and the row-cap trigger,
-so a container started from this image enforces the same rules as the test
-suite with no extra setup.
+of it on 5432. `docker/init` is what provides `sys.jobs`, the row-cap trigger, and the `admin`
+role clients connect as, so a container started from this image enforces the
+same rules as the test suite with no extra setup.
 
 - `DSQL_PORT` (default 5432) and `DSQL_PG_PORT` (default 5433) move the two
   listeners. `POSTGRES_USER`, `POSTGRES_DB`, and `POSTGRES_HOST_AUTH_METHOD`
@@ -364,7 +364,7 @@ internal/classify/       libpg_query AST → verdict and statement kinds
 internal/txn/            transaction state machine and limits          (M2)
 internal/conformance/    probe suite, recording, and comparison        (M7)
 internal/occ/            conflict injection/adjudication               (M5)
-docker/init/             backing init: sys.jobs, row-cap trigger    (M6)
+docker/init/             backing init: sys.jobs, row cap, admin role (M6)
 rules/                   embedded versioned ruleset and loader
 test/integration/        container-backed tests
 test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
