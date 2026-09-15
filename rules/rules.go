@@ -43,6 +43,10 @@ type Rule struct {
 	SetName []string `yaml:"set_name"`
 	// ColumnArray matches a table that declares an array column.
 	ColumnArray bool `yaml:"column_array"`
+	// RemoveType matches the object kind of a DROP, and RenameType the object
+	// kind of an ALTER ... RENAME.
+	RemoveType []string `yaml:"remove_type"`
+	RenameType []string `yaml:"rename_type"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`

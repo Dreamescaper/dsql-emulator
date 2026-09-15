@@ -186,7 +186,7 @@ occ:
 
 Available predicates: `relpersistence`, `column_type`, `column_array`,
 `objtype`, `txn_kind`, `set_name`, `language_not`, `sequence_cache_min`,
-`identity_cache_min`, and `cache_allow`. The `since` field is reserved for version-gating a rule, and
+`identity_cache_min`, `cache_allow`, `remove_type`, and `rename_type`. The `since` field is reserved for version-gating a rule, and
 `rewrites` (for `CREATE INDEX ASYNC`) lands in M6. Foreign keys carry no rule:
 they are supported, so they are simply forwarded, and they appear only as an OCC
 source.
@@ -283,6 +283,7 @@ and the emulator now reproduces all 65 cases except the two deliberate M6 gaps:
 | A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
 | Data types | The documented supported set is accepted, including aliases and precision. Every type absent from it is refused with `0A000` "datatype X not supported", and array columns are refused too. Rule added; the deny-list covers the tested set. |
 | Query-runtime types | Arrays and `inet` work in expressions even though they cannot be columns. |
+| Enums | No user-defined types exist. `CREATE TYPE`, `ALTER TYPE` (add value and rename), and `DROP TYPE` are all refused with `0A000`; a column or cast naming one fails as `42704`. The workarounds work: a `text` column with a `CHECK (m IN (...))`, or a `CREATE DOMAIN ... CHECK (...)` whose domain is supported; a bad label raises `23514`. Rules added for the three statements. |
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |
 

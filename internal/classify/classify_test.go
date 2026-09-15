@@ -65,6 +65,9 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"unsupported type geometric", "CREATE TABLE t (v point)", "unsupported_type", "0A000"},
 		{"array column int", "CREATE TABLE t (v int[])", "array_column", "0A000"},
 		{"array column text", "CREATE TABLE t (v text[])", "array_column", "0A000"},
+		{"alter enum", "ALTER TYPE mood ADD VALUE 'meh'", "alter_enum", "0A000"},
+		{"alter type rename", "ALTER TYPE mood RENAME TO mood2", "rename_type", "0A000"},
+		{"drop type", "DROP TYPE IF EXISTS mood", "drop_type", "0A000"},
 	}
 
 	for _, tc := range cases {

@@ -71,6 +71,10 @@ func cleanupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_identity_cached",
 		"DROP TABLE IF EXISTS baseline_types_ok",
 		"DROP TABLE IF EXISTS baseline_types_alias",
+		"DROP TABLE IF EXISTS baseline_enum_col",
+		"DROP TABLE IF EXISTS baseline_enum_t",
+		"DROP TABLE IF EXISTS baseline_enum_check",
+		"DROP TABLE IF EXISTS baseline_enum_check_v",
 		"DROP VIEW IF EXISTS baseline_v",
 		"DROP INDEX IF EXISTS baseline_idx_value",
 		"DROP INDEX IF EXISTS baseline_idx_value_async",
@@ -79,6 +83,7 @@ func cleanupStatements() []string {
 		"DROP SEQUENCE IF EXISTS baseline_seq_one",
 		"DROP FUNCTION IF EXISTS baseline_fn",
 		"DROP DOMAIN IF EXISTS baseline_domain",
+		"DROP DOMAIN IF EXISTS baseline_mood_domain",
 		"DROP SCHEMA IF EXISTS baseline_schema",
 	}
 }
@@ -172,6 +177,7 @@ func DefaultSuite() Suite {
 
 	cases = append(cases, supportedTypeCases()...)
 	cases = append(cases, unsupportedTypeCases()...)
+	cases = append(cases, enumCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -255,6 +261,29 @@ func unsupportedTypeCases() []Case {
 		})
 	}
 	return cases
+}
+
+// enumCases cover enum types, which DSQL does not provide, and the text plus
+// CHECK and domain patterns applications use instead.
+func enumCases() []Case {
+	return []Case{
+		{Name: "enum_create_type", Group: "enum", Note: "CREATE TYPE ... AS ENUM", Steps: one("CREATE TYPE baseline_mood AS ENUM ('sad', 'ok')")},
+		{Name: "enum_alter_add_value", Group: "enum", Steps: one("ALTER TYPE baseline_mood ADD VALUE 'meh'")},
+		{Name: "enum_alter_rename", Group: "enum", Steps: one("ALTER TYPE baseline_mood RENAME TO baseline_mood_renamed")},
+		{Name: "enum_drop_if_exists", Group: "enum", Steps: one("DROP TYPE IF EXISTS baseline_mood")},
+		{Name: "enum_column_undefined", Group: "enum", Note: "a column of a type that cannot be created", Steps: one("CREATE TABLE baseline_enum_col (m baseline_mood)")},
+		{Name: "enum_cast_undefined", Group: "enum", Note: "a cast to a type that cannot be created", Steps: one("SELECT 'sad'::baseline_mood")},
+		{Name: "enum_domain_create", Group: "enum", Note: "domain as the enum workaround", Steps: one("CREATE DOMAIN baseline_mood_domain AS text CHECK (VALUE IN ('sad', 'ok'))")},
+		{Name: "enum_domain_violation", Group: "enum", Note: "domain CHECK rejects an unknown label", Steps: []string{
+			"CREATE TABLE baseline_enum_t (id int, m baseline_mood_domain)",
+			"INSERT INTO baseline_enum_t (id, m) VALUES (1, 'bogus')",
+		}},
+		{Name: "enum_check_create", Group: "enum", Note: "CHECK constraint as the enum workaround", Steps: one("CREATE TABLE baseline_enum_check (id int, m text CHECK (m IN ('sad', 'ok')))")},
+		{Name: "enum_check_violation", Group: "enum", Note: "CHECK constraint rejects an unknown label", Steps: []string{
+			"CREATE TABLE baseline_enum_check_v (id int, m text CHECK (m IN ('sad', 'ok')))",
+			"INSERT INTO baseline_enum_check_v (id, m) VALUES (1, 'bogus')",
+		}},
+	}
 }
 
 // typeSlug turns a SQL type into a name-safe token.

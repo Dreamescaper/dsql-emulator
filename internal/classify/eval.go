@@ -20,6 +20,12 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if r.ColumnArray && !hasArrayColumn(node) {
 		return false
 	}
+	if len(r.RemoveType) > 0 && !contains(r.RemoveType, removeType(node)) {
+		return false
+	}
+	if len(r.RenameType) > 0 && !contains(r.RenameType, renameType(node)) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -91,6 +97,20 @@ func columnTypes(node *pg_query.Node) []string {
 		}
 	}
 	return out
+}
+
+func removeType(node *pg_query.Node) string {
+	if d := node.GetDropStmt(); d != nil {
+		return d.GetRemoveType().String()
+	}
+	return ""
+}
+
+func renameType(node *pg_query.Node) string {
+	if r := node.GetRenameStmt(); r != nil {
+		return r.GetRenameType().String()
+	}
+	return ""
 }
 
 // hasArrayColumn reports whether any column in a CREATE TABLE is an array.

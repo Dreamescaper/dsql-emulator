@@ -67,6 +67,25 @@ unsupported:
     code: "0A000"
     message: "array columns are not supported"
 
+  # No user-defined types exist, so every statement that would touch one is
+  # refused: CREATE TYPE, ALTER TYPE, and DROP TYPE.
+  - id: alter_enum
+    stmt: alter_enum_stmt
+    code: "0A000"
+    message: "ALTER TYPE is not supported"
+
+  - id: rename_type
+    stmt: rename_stmt
+    rename_type: ["OBJECT_TYPE"]
+    code: "0A000"
+    message: "ALTER TYPE is not supported"
+
+  - id: drop_type
+    stmt: drop_stmt
+    remove_type: ["OBJECT_TYPE"]
+    code: "0A000"
+    message: "unsupported object in DROP statement"
+
   - id: materialized_view
     stmt: create_table_as_stmt
     objtype: ["OBJECT_MATVIEW"]

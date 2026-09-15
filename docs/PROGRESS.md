@@ -34,6 +34,27 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M7 (part 5) — enum conformance probes (2026-09-15)
+
+Added a ten-probe `enum` group and recorded it (record now 102 cases).
+
+DSQL has no user-defined types: `CREATE TYPE ... AS ENUM` is refused (`0A000`),
+and so are `ALTER TYPE ... ADD VALUE`, `ALTER TYPE ... RENAME TO`, and
+`DROP TYPE IF EXISTS`. A column or cast naming such a type fails as `42704`,
+matching the `serial` behavior. The patterns applications use instead work: a
+`text` column with `CHECK (m IN (...))`, and a `CREATE DOMAIN ... CHECK (...)`
+whose domain is supported; both reject a bad label with `23514`.
+
+The first comparison found three divergences, all the emulator letting
+PostgreSQL answer: `ALTER TYPE` returned `42704`, and `DROP TYPE IF EXISTS`
+succeeded. Two predicates were added (`remove_type`, `rename_type`) plus an
+`alter_enum` rule, so all three are now refused with `0A000`.
+
+Verification: `gofmt` clean, `go build`, `go vet` (both tags),
+`go test -race ./...`, `go test -tags integration ./test/...`; the conformance
+run reports `102 cases match the golden record`, and `--cleanup-only` confirms
+no `baseline_` objects remain.
+
 ### M7 (part 4) — data-type conformance probes (2026-09-15)
 
 Added a `types` group of 27 probes and recorded them, bringing the record to 92

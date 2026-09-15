@@ -1,0 +1,163 @@
+{
+  "recorded_at": "2026-09-15T20:37:27.853966Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "enum_create_type",
+      "group": "enum",
+      "note": "CREATE TYPE ... AS ENUM",
+      "steps": [
+        "CREATE TYPE baseline_mood AS ENUM ('sad', 'ok')"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE TYPE not supported"
+        }
+      ]
+    },
+    {
+      "name": "enum_alter_add_value",
+      "group": "enum",
+      "steps": [
+        "ALTER TYPE baseline_mood ADD VALUE 'meh'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "ALTER TYPE not supported"
+        }
+      ]
+    },
+    {
+      "name": "enum_alter_rename",
+      "group": "enum",
+      "steps": [
+        "ALTER TYPE baseline_mood RENAME TO baseline_mood_renamed"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported object in RENAME statement"
+        }
+      ]
+    },
+    {
+      "name": "enum_drop_if_exists",
+      "group": "enum",
+      "steps": [
+        "DROP TYPE IF EXISTS baseline_mood"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported object in DROP statement"
+        }
+      ]
+    },
+    {
+      "name": "enum_column_undefined",
+      "group": "enum",
+      "note": "a column of a type that cannot be created",
+      "steps": [
+        "CREATE TABLE baseline_enum_col (m baseline_mood)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "type \"baseline_mood\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "enum_cast_undefined",
+      "group": "enum",
+      "note": "a cast to a type that cannot be created",
+      "steps": [
+        "SELECT 'sad'::baseline_mood"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "type \"baseline_mood\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "enum_domain_create",
+      "group": "enum",
+      "note": "domain as the enum workaround",
+      "steps": [
+        "CREATE DOMAIN baseline_mood_domain AS text CHECK (VALUE IN ('sad', 'ok'))"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE DOMAIN"
+        }
+      ]
+    },
+    {
+      "name": "enum_domain_violation",
+      "group": "enum",
+      "note": "domain CHECK rejects an unknown label",
+      "steps": [
+        "CREATE TABLE baseline_enum_t (id int, m baseline_mood_domain)",
+        "INSERT INTO baseline_enum_t (id, m) VALUES (1, 'bogus')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "23514",
+          "message": "value for domain baseline_mood_domain violates check constraint \"baseline_mood_domain_check\""
+        }
+      ]
+    },
+    {
+      "name": "enum_check_create",
+      "group": "enum",
+      "note": "CHECK constraint as the enum workaround",
+      "steps": [
+        "CREATE TABLE baseline_enum_check (id int, m text CHECK (m IN ('sad', 'ok')))"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "enum_check_violation",
+      "group": "enum",
+      "note": "CHECK constraint rejects an unknown label",
+      "steps": [
+        "CREATE TABLE baseline_enum_check_v (id int, m text CHECK (m IN ('sad', 'ok')))",
+        "INSERT INTO baseline_enum_check_v (id, m) VALUES (1, 'bogus')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "CREATE TABLE"
+        },
+        {
+          "outcome": "error",
+          "sqlstate": "23514",
+          "message": "new row for relation \"baseline_enum_check_v\" violates check constraint \"baseline_enum_check_v_m_check\""
+        }
+      ]
+    }
+  ]
+}
