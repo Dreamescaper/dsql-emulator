@@ -34,6 +34,30 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Published container image (2026-09-15)
+
+Added `Dockerfile` and `docker/entrypoint.sh`, which bundle PostgreSQL with the
+`docker/init` scripts and run the proxy in front of it, so one container is a
+working DSQL endpoint. `make docker-build` and `make docker-push` build and
+publish it; `IMAGE` and `TAG` default to
+`ghcr.io/dreamescaper/dsql-emulator:latest`.
+
+Verification: built the image, ran it, and connected from a second container on
+a shared Docker network as a DSQL client would, with `sslmode=require` and a
+password that is not a real credential:
+
+- `select 1` connects; `select version()` returns `PostgreSQL 16` and
+  `show server_version` returns `16.15`.
+- `truncate` is refused with `unsupported statement: Truncate`.
+- An autocommit insert of 3001 rows fails with `transaction row limit exceeded`
+  and leaves zero rows, so the bundled init scripts are applied.
+- The container reports `proxy listening` about two seconds after start, which
+  is the testcontainers wait strategy.
+
+Publishing is blocked on registry permissions: the `gh` token has `repo` but not
+`write:packages`, so `docker push ghcr.io/...` is denied. Running
+`gh auth refresh -h github.com -s write:packages` unblocks it.
+
 ### M5 (part 3) — OCC behavior recorded (2026-09-15)
 
 Recorded the concurrency probes. The record now covers 181 cases, matches with

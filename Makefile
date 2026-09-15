@@ -2,8 +2,10 @@ BINARY := bin/dsql-emu
 BASELINE := bin/dsql-baseline
 GO ?= go
 GOLDEN_DIR ?= test/conformance/golden
+IMAGE ?= ghcr.io/dreamescaper/dsql-emulator
+TAG ?= latest
 
-.PHONY: build run test test-integration vet tidy up down clean baseline baseline-dry-run conformance
+.PHONY: build run test test-integration vet tidy up down clean baseline baseline-dry-run conformance docker-build docker-push
 
 build:
 	$(GO) build -o $(BINARY) ./cmd/dsql-emu
@@ -46,3 +48,11 @@ baseline-dry-run:
 # Check the emulator against the recorded baseline (does not touch a cluster).
 conformance:
 	$(GO) test -tags integration -count=1 -run TestConformanceAgainstEmulator ./test/conformance/
+
+# One container serves the whole emulator: PostgreSQL with the init scripts it
+# needs, plus the proxy on port 5432.
+docker-build:
+	docker build -t $(IMAGE):$(TAG) .
+
+docker-push: docker-build
+	docker push $(IMAGE):$(TAG)

@@ -1,0 +1,9 @@
+.git
+.github
+bin
+.vscode
+docs
+test
+*.token
+dsql.token
+*.md

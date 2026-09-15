@@ -157,6 +157,39 @@ SQLSTATE: 40001
   authentication exchange instead of relaying it, and open its own upstream
   session with configured credentials.
 
+## Container image
+
+`Dockerfile` builds a single image that serves the whole emulator: PostgreSQL on
+an internal port with the `docker/init` scripts applied, and the proxy in front
+of it on 5432. `docker/init` is what provides `sys.jobs` and the row-cap trigger,
+so a container started from this image enforces the same rules as the test
+suite with no extra setup.
+
+- `DSQL_PORT` (default 5432) and `DSQL_PG_PORT` (default 5433) move the two
+  listeners. `POSTGRES_USER`, `POSTGRES_DB`, and `POSTGRES_HOST_AUTH_METHOD`
+  pass through to the backing database; trust is the default so a token works.
+- Readiness: the emulator logs `proxy listening`, and the image has a
+  `pg_isready` healthcheck on 5432.
+- Build and publish with `make docker-build` and `make docker-push`
+  (`IMAGE`/`TAG`, default `ghcr.io/dreamescaper/dsql-emulator:latest`).
+
+With testcontainers-go:
+
+```go
+c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+    ContainerRequest: testcontainers.ContainerRequest{
+        Image:        "ghcr.io/dreamescaper/dsql-emulator:latest",
+        ExposedPorts: []string{"5432/tcp"},
+        WaitingFor:   wait.ForLog("proxy listening"),
+    },
+    Started: true,
+})
+host, _ := c.Host(ctx)
+port, _ := c.MappedPort(ctx, "5432")
+dsn := fmt.Sprintf("postgres://admin:an-iam-token@%s:%s/postgres?sslmode=require",
+    host, port.Port())
+```
+
 ## Session FSM rules
 
 Enforced by parsing, not regex. A "batch" is one simple `Query` (which may hold
