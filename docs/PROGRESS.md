@@ -34,6 +34,56 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### M5 — optimistic concurrency control (2026-09-15)
+
+- **Mode 1, native delegation.** The upstream already runs at `REPEATABLE READ`,
+  so write-write conflicts raise PostgreSQL's serialization failure. The
+  emulator now rewrites that error to DSQL's wording and OCC code
+  (`change conflicts with another transaction (OC000)`, SQLSTATE `40001`).
+- **Mode 2, deterministic injection.** `occ.inject` rules name tables and an
+  interval. When a transaction that touched one commits, the emulator rolls the
+  upstream back instead of committing and reports the conflict, so an
+  application can unit-test its retry loop without a real race.
+- The abort machinery was generalized: a `txnFailure` now carries the statement
+  to send, the ReadyForQuery status to emit, and how many upstream
+  ReadyForQuery messages to swallow. Transaction aborts use it with `E`, an
+  injected commit conflict with `I`.
+- Classification now reports the relations a DML statement touches, and the
+  session remembers a prepared statement's kinds and tables.
+- Row-locking clauses: `FOR UPDATE` and `FOR KEY SHARE` are allowed;
+  `FOR SHARE` and `FOR NO KEY UPDATE` are refused, with a `locking` predicate
+  and an `unsupported_locking` rule. Four `occ` probes were added.
+
+Verification:
+
+```
+gofmt -l .                                     # no output
+go build ./... && go vet ./... && go vet -tags integration ./...   # ok
+go test -race ./...                            # ok
+go test -tags integration -count=1 ./test/...  # ok
+```
+
+New tests: `TestSessionInjectsOccConflictAtCommit`,
+`TestSessionInjectsOccOnlyForMatchingTables`, and
+`TestSessionRewritesSerializationFailure` (white-box, deterministic); the
+integration subtest `concurrent updates conflict with an occ code`, which runs
+two real sessions, blocks one on PostgreSQL's row lock, and asserts the loser
+sees `40001` carrying `OC000`.
+
+Conformance still reports `102 cases match the golden record`; the eleven probes
+added since the last baseline (environment and locking) are listed as
+unrecorded.
+
+Deliberate limitations:
+
+- The upstream blocks before failing where DSQL is lock-free. Mode 3, an
+  adjudicator that approximates lock-free conflict, is not built.
+- Injection and the row cap apply to explicit transactions only.
+- Two-session conflict probes are not in the golden suite, which is
+  single-connection; a blocking conflict cannot be replayed safely against the
+  emulator. Multi-session support is the next step for pinning DSQL's exact
+  conflict output.
+
 ### M6 — async indexes and sys.jobs (2026-09-15)
 
 `CREATE INDEX ASYNC` now works end to end, closing the last two conformance

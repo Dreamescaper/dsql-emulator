@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +222,62 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 	t.Run("synchronous index is still refused", func(t *testing.T) {
 		_, err := conn.Exec(ctx, "CREATE INDEX widget_sync_idx ON widget (name)")
 		assertSQLState(t, err, "0A000")
+	})
+
+	t.Run("concurrent updates conflict with an occ code", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists occ_t (id int primary key, v int)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "insert into occ_t values (1, 0) on conflict (id) do nothing"); err != nil {
+			t.Fatalf("seed row: %v", err)
+		}
+
+		second, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatalf("second connection: %v", err)
+		}
+		defer second.Close(context.Background())
+
+		first, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin first: %v", err)
+		}
+		if _, err := first.Exec(ctx, "update occ_t set v = v + 1 where id = 1"); err != nil {
+			t.Fatalf("first update: %v", err)
+		}
+
+		// The second update blocks on PostgreSQL's row lock, which DSQL would
+		// not do; once the first commits it fails as a serialization error.
+		done := make(chan error, 1)
+		go func() {
+			other, err := second.Begin(ctx)
+			if err != nil {
+				done <- err
+				return
+			}
+			if _, err := other.Exec(ctx, "update occ_t set v = v + 1 where id = 1"); err != nil {
+				done <- err
+				return
+			}
+			done <- other.Commit(ctx)
+		}()
+
+		time.Sleep(300 * time.Millisecond)
+		if err := first.Commit(ctx); err != nil {
+			t.Fatalf("first commit: %v", err)
+		}
+
+		err = <-done
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			t.Fatalf("expected a serialization error, got %v", err)
+		}
+		if pgErr.Code != "40001" {
+			t.Fatalf("got SQLSTATE %s want 40001", pgErr.Code)
+		}
+		if !strings.Contains(pgErr.Message, "OC000") {
+			t.Fatalf("message %q does not carry the OCC code", pgErr.Message)
+		}
 	})
 
 	t.Run("foreign keys are supported", func(t *testing.T) {

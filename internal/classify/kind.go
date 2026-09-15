@@ -24,6 +24,28 @@ var ddlNodes = map[string]bool{
 	"alter_object_schema_stmt": true,
 }
 
+// statementTables returns the relations a DML statement reads or writes.
+func statementTables(node *pg_query.Node) []string {
+	switch {
+	case node.GetInsertStmt() != nil:
+		return relationName(node.GetInsertStmt().GetRelation())
+	case node.GetUpdateStmt() != nil:
+		return relationName(node.GetUpdateStmt().GetRelation())
+	case node.GetDeleteStmt() != nil:
+		return relationName(node.GetDeleteStmt().GetRelation())
+	case node.GetMergeStmt() != nil:
+		return relationName(node.GetMergeStmt().GetRelation())
+	}
+	return nil
+}
+
+func relationName(rel *pg_query.RangeVar) []string {
+	if rel == nil || rel.GetRelname() == "" {
+		return nil
+	}
+	return []string{rel.GetRelname()}
+}
+
 // kindOf classifies a statement node for transaction rule purposes.
 func kindOf(node *pg_query.Node) Kind {
 	switch nodeType(node) {

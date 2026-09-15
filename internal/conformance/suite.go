@@ -179,6 +179,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, unsupportedTypeCases()...)
 	cases = append(cases, enumCases()...)
 	cases = append(cases, environmentCases()...)
+	cases = append(cases, occCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -298,6 +299,18 @@ func environmentCases() []Case {
 		{Name: "env_timezone", Group: "environment", Steps: one("SHOW timezone")},
 		{Name: "env_client_encoding", Group: "environment", Steps: one("SHOW client_encoding")},
 		{Name: "env_lc_collate", Group: "environment", Steps: one("SHOW lc_collate")},
+	}
+}
+
+// occCases cover the row-locking clauses DSQL uses for conflict detection.
+// True two-session conflicts are not represented here: the suite runs one
+// connection, and PostgreSQL blocks where DSQL is lock-free.
+func occCases() []Case {
+	return []Case{
+		{Name: "occ_for_update", Group: "occ", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR UPDATE")},
+		{Name: "occ_for_key_share", Group: "occ", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR KEY SHARE")},
+		{Name: "occ_for_no_key_update", Group: "occ", Note: "documented as unsupported", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR NO KEY UPDATE")},
+		{Name: "occ_for_share", Group: "occ", Note: "documented as unsupported", Steps: one("SELECT id FROM baseline_parent WHERE id = '00000000-0000-0000-0000-0000000000aa' FOR SHARE")},
 	}
 }
 

@@ -29,13 +29,24 @@ type testSession struct {
 // startup exchange, leaving it ready to classify frontend messages.
 func newTestSession(t *testing.T) *testSession {
 	t.Helper()
+	return newTestSessionWith(t, nil)
+}
+
+// newTestSessionWith builds a session from an optional ruleset, defaulting to
+// the embedded one.
+func newTestSessionWith(t *testing.T, custom *rules.Ruleset) *testSession {
+	t.Helper()
 
 	clientProxy, clientApp := net.Pipe()
 	upstreamProxy, backendApp := net.Pipe()
 
-	rs, err := rules.Default()
-	if err != nil {
-		t.Fatalf("load ruleset: %v", err)
+	rs := custom
+	if rs == nil {
+		var err error
+		rs, err = rules.Default()
+		if err != nil {
+			t.Fatalf("load ruleset: %v", err)
+		}
 	}
 
 	s := &session{
@@ -48,7 +59,7 @@ func newTestSession(t *testing.T) *testSession {
 			MaxAge:  time.Duration(rs.Limits.TxnAgeSeconds) * time.Second,
 		}),
 		serverVersion: DefaultServerVersion,
-		statements:    make(map[string][]classify.Kind),
+		statements:    make(map[string]statementInfo),
 		txStatus:      'I',
 	}
 
@@ -452,6 +463,90 @@ func TestSessionCommitOnFailedTransactionRollsBack(t *testing.T) {
 
 	// The transaction is over; the session is usable again.
 	ts.roundTrip(t, "SELECT 1", "SELECT 1", 'I')
+}
+
+const occRuleset = `
+dsql_version: "test"
+isolation:
+  supported: ["repeatable read"]
+limits:
+  dml_rows_per_txn: 3000
+  txn_age_seconds: 1800
+occ:
+  error: "change conflicts with another transaction (OC000)"
+  sqlstate: "40001"
+  inject:
+    - id: inject_occ
+      tables: ["occ_t"]
+      every: 1
+`
+
+func TestSessionInjectsOccConflictAtCommit(t *testing.T) {
+	rs, err := rules.Load(strings.NewReader(occRuleset))
+	if err != nil {
+		t.Fatalf("load ruleset: %v", err)
+	}
+	ts := newTestSessionWith(t, rs)
+
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "INSERT INTO occ_t VALUES (1)", "INSERT 0 1", 'T')
+
+	// The commit is refused, the upstream transaction is rolled back, and the
+	// transaction ends cleanly.
+	ts.send(t, &pgproto3.Query{String: "COMMIT"})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected a conflict error")
+	}
+	if er.Code != "40001" || !strings.Contains(er.Message, "OC000") {
+		t.Fatalf("got %s %q want 40001 with OC000", er.Code, er.Message)
+	}
+
+	msg := ts.receiveBackend(t)
+	q, ok := msg.(*pgproto3.Query)
+	if !ok || q.String != "ROLLBACK" {
+		t.Fatalf("expected ROLLBACK at the backend, got %T", msg)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+
+	rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery)
+	if !ok || rfq.TxStatus != 'I' {
+		t.Fatalf("expected idle ReadyForQuery, got %v", rfq)
+	}
+}
+
+func TestSessionInjectsOccOnlyForMatchingTables(t *testing.T) {
+	rs, err := rules.Load(strings.NewReader(occRuleset))
+	if err != nil {
+		t.Fatalf("load ruleset: %v", err)
+	}
+	ts := newTestSessionWith(t, rs)
+
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "INSERT INTO other_t VALUES (1)", "INSERT 0 1", 'T')
+	ts.roundTrip(t, "COMMIT", "COMMIT", 'I')
+}
+
+func TestSessionRewritesSerializationFailure(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.sendBackend(t, &pgproto3.ErrorResponse{
+		Severity: "ERROR",
+		Code:     "40001",
+		Message:  "could not serialize access due to concurrent update",
+	})
+
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected an error response")
+	}
+	if er.Code != "40001" {
+		t.Fatalf("got SQLSTATE %q want 40001", er.Code)
+	}
+	if !strings.Contains(er.Message, "OC000") {
+		t.Fatalf("message %q does not carry the OCC code", er.Message)
+	}
 }
 
 func TestSessionRewritesServerVersion(t *testing.T) {

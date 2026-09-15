@@ -47,6 +47,8 @@ type Rule struct {
 	// kind of an ALTER ... RENAME.
 	RemoveType []string `yaml:"remove_type"`
 	RenameType []string `yaml:"rename_type"`
+	// Locking matches the row-locking strengths of a SELECT.
+	Locking []string `yaml:"locking"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`
@@ -67,13 +69,21 @@ type Limits struct {
 	TxnAgeSeconds int `yaml:"txn_age_seconds"`
 }
 
-// OCC describes conflict behavior. It is not yet enforced.
+// OCC describes conflict behavior.
 type OCC struct {
-	Sources           []string         `yaml:"sources"`
-	KeyColumnsOnlyFor []string         `yaml:"key_columns_only_for"`
-	Error             string           `yaml:"error"`
-	SQLState          string           `yaml:"sqlstate"`
-	Inject            []map[string]any `yaml:"inject"`
+	Sources           []string       `yaml:"sources"`
+	KeyColumnsOnlyFor []string       `yaml:"key_columns_only_for"`
+	Error             string         `yaml:"error"`
+	SQLState          string         `yaml:"sqlstate"`
+	Inject            []OCCInjection `yaml:"inject"`
+}
+
+// OCCInjection fails a transaction at COMMIT when it has touched one of the
+// listed tables, every Nth time. With no tables it matches any transaction.
+type OCCInjection struct {
+	ID     string   `yaml:"id"`
+	Tables []string `yaml:"tables"`
+	Every  int      `yaml:"every"`
 }
 
 // Default returns the embedded ruleset.

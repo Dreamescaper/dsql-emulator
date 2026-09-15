@@ -77,6 +77,27 @@ Three stacked modes, each explicit about what it fakes:
    `(table, key predicate)`; at commit, inject `40001` on overlap using a fake
    commit timestamp. Approximates lock-free OCC. Start coarse, refine later.
 
+### What the emulator does
+
+1. **Native delegation (done).** The upstream runs at `REPEATABLE READ`, so a
+   write-write conflict raises PostgreSQL's serialization failure. The emulator
+   rewrites that error to DSQL's wording, `change conflicts with another
+   transaction (OC000)`, keeping SQLSTATE `40001`. The upstream still *blocks*
+   before failing, where DSQL is lock-free; that latency divergence remains.
+2. **Deterministic injection (done).** `occ.inject` rules name tables and an
+   interval; when a transaction that touched one of them commits, the emulator
+   rolls the upstream back instead of committing and reports the conflict. This
+   is what lets an application unit-test its retry loop without a real race.
+   Injection applies to explicit transactions only, since an implicit
+   transaction has already committed by the time it ends.
+3. **Adjudication shim (not built).** A global write-intent registry would
+   approximate lock-free conflict at commit without the blocking.
+
+True two-session conflicts are not in the conformance suite: it runs one
+connection, and a blocking PostgreSQL conflict cannot be replayed safely.
+They are covered by integration tests instead, and multi-session golden support
+is the next step for pinning DSQL's exact conflict output.
+
 ### Foreign keys are an OCC source, not a reject rule
 
 Aurora DSQL supports foreign keys (`NO ACTION`, `RESTRICT`, `CASCADE`,
@@ -256,7 +277,7 @@ fixture to keep forever.
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
 | M4 | Auth/TLS/version emulation; single DB; UTC/C collation | in progress (TLS and version done; IAM token auth pending) |
-| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | planned |
+| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | in progress (modes 1 and 2 done; adjudicator and FK fixtures pending) |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | done |
 | M7 | Conformance harness: golden record + emulator diff | done |
 
@@ -302,6 +323,7 @@ and the emulator now reproduces every recorded case:
 | A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
 | Data types | The documented supported set is accepted, including aliases and precision. Every type absent from it is refused with `0A000` "datatype X not supported", and array columns are refused too. Rule added; the deny-list covers the tested set. |
 | Query-runtime types | Arrays and `inet` work in expressions even though they cannot be columns. |
+| Row locking | `FOR UPDATE` and `FOR KEY SHARE` are accepted; `FOR SHARE` and `FOR NO KEY UPDATE` are refused with `0A000`. Rules added; probe cases await recording. |
 | Enums | No user-defined types exist. `CREATE TYPE`, `ALTER TYPE` (add value and rename), and `DROP TYPE` are all refused with `0A000`; a column or cast naming one fails as `42704`. The workarounds work: a `text` column with a `CHECK (m IN (...))`, or a `CREATE DOMAIN ... CHECK (...)` whose domain is supported; a bad label raises `23514`. Rules added for the three statements. |
 | `server_version` | `PostgreSQL 16`. |
 | Rejection message text | Recorded verbatim in the golden file. |

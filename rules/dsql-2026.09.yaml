@@ -86,6 +86,14 @@ unsupported:
     code: "0A000"
     message: "unsupported object in DROP statement"
 
+  # DSQL detects conflicts at commit for FOR UPDATE and FOR KEY SHARE, but does
+  # not offer FOR SHARE or FOR NO KEY UPDATE.
+  - id: unsupported_locking
+    stmt: select_stmt
+    locking: ["LCS_FORSHARE", "LCS_FORNOKEYUPDATE"]
+    code: "0A000"
+    message: "locking clause not supported"
+
   - id: materialized_view
     stmt: create_table_as_stmt
     objtype: ["OBJECT_MATVIEW"]

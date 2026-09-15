@@ -38,6 +38,20 @@ var abortTransactionQuery = func() []byte {
 	return encoded
 }()
 
+var rollbackQuery = func() []byte {
+	encoded, _ := (&pgproto3.Query{String: "ROLLBACK"}).Encode(nil)
+	return encoded
+}()
+
+// txnFailure is a transaction failure the session injects. The upstream is sent
+// statement, its output is suppressed until swallow ReadyForQuery messages have
+// gone by, and the client then receives one with status.
+type txnFailure struct {
+	statement []byte
+	status    byte
+	swallow   int
+}
+
 func encodeBackend(msg pgproto3.BackendMessage) []byte {
 	encoded, _ := msg.Encode(nil)
 	return encoded
@@ -69,13 +83,17 @@ type session struct {
 	// txnAborted reports that the client's transaction has failed and only
 	// COMMIT or ROLLBACK may end it.
 	txnAborted bool
-	// aborting suppresses upstream output while an abort is injected.
-	aborting    bool
-	abortTarget int
-	abortRFQs   int
-	// abortPending waits for the client's Sync before injecting the abort,
-	// because the upstream extended-query batch is still open.
-	abortPending bool
+	// failure is the transaction failure being injected; while set, upstream
+	// output is suppressed through its ReadyForQuery count.
+	failure     *txnFailure
+	failureRFQs int
+	// pendingFailure waits for the client's Sync before it is injected, because
+	// the upstream extended-query batch is still open.
+	pendingFailure *txnFailure
+	// occTouched are the relations the current transaction has written, and
+	// occCommits counts commits that matched an injection rule.
+	occTouched map[string]bool
+	occCommits int
 	// inExtended is true between an extended-protocol message and the Sync that
 	// closes its batch.
 	inExtended bool
@@ -89,7 +107,7 @@ type session struct {
 	// it holds. Transaction rules are enforced when a statement is bound, not
 	// when it is parsed, because clients cache prepared statements and re-run
 	// them without sending Parse again.
-	statements map[string][]classify.Kind
+	statements map[string]statementInfo
 
 	fromClient   atomic.Int64
 	fromUpstream atomic.Int64
@@ -178,8 +196,8 @@ func (s *session) pumpBackend() {
 		}
 		s.fromUpstream.Add(int64(len(msg.Raw)))
 
-		if s.swallowingAbort() {
-			s.consumeAbortMessage(msg)
+		if s.failureActive() {
+			s.consumeFailureMessage(msg)
 			continue
 		}
 
@@ -188,6 +206,10 @@ func (s *session) pumpBackend() {
 			// Describe for an async index build reports a job_id column.
 			if s.markAsyncIndexDescribed() {
 				s.writeClient(jobIDRowDescription())
+				continue
+			}
+		case 'E':
+			if s.rewriteConflictError(msg) {
 				continue
 			}
 		case 'S':
@@ -272,15 +294,15 @@ func (s *session) handleSync(msg wire.Message) {
 	s.markExtended(false)
 
 	s.stateMu.Lock()
-	pending := s.abortPending
-	s.abortPending = false
+	pending := s.pendingFailure
+	s.pendingFailure = nil
 	s.skipSync = false
 	s.stateMu.Unlock()
 
-	if pending {
+	if pending != nil {
 		// Close the upstream batch, then fail the transaction.
 		s.forward(msg)
-		s.beginAbort(2)
+		s.beginFailure(*pending)
 		return
 	}
 	s.forward(msg)
@@ -326,6 +348,16 @@ func (s *session) handleQuery(msg wire.Message) {
 		s.reject(v.Code, v.Message, v.Rule, false)
 		return
 	}
+
+	s.addOccTables(result.Tables)
+	if endsTransaction(result.Kinds) {
+		if isCommit(result.Kinds) && s.occCommitConflict() {
+			s.occFailure(false)
+			return
+		}
+		s.resetOcc()
+	}
+
 	if rewritten := s.rewriteSQL(query.String); rewritten != "" {
 		query.String = rewritten
 		if encoded, err := query.Encode(nil); err == nil {
@@ -358,7 +390,7 @@ func (s *session) handleParse(msg wire.Message) {
 	if s.aborted() {
 		result, err := s.classifier.Classify(parse.Query)
 		if err == nil && endsTransaction(result.Kinds) {
-			s.statements[parse.Name] = result.Kinds
+			s.statements[parse.Name] = statementInfo{kinds: result.Kinds, tables: result.Tables}
 			s.forward(msg)
 			return
 		}
@@ -383,13 +415,13 @@ func (s *session) handleParse(msg wire.Message) {
 	if rewritten := s.rewriteSQL(parse.Query); rewritten != "" {
 		parse.Query = rewritten
 		if encoded, err := parse.Encode(nil); err == nil {
-			s.statements[parse.Name] = result.Kinds
+			s.statements[parse.Name] = statementInfo{kinds: result.Kinds, tables: result.Tables}
 			_ = s.writeUpstream(encoded)
 			return
 		}
 	}
 
-	s.statements[parse.Name] = result.Kinds
+	s.statements[parse.Name] = statementInfo{kinds: result.Kinds, tables: result.Tables}
 	s.forward(msg)
 }
 
@@ -407,14 +439,14 @@ func (s *session) handleBind(msg wire.Message) {
 		return
 	}
 
-	kinds, known := s.statements[bind.PreparedStatement]
+	info, known := s.statements[bind.PreparedStatement]
 	if !known {
 		s.forward(msg)
 		return
 	}
 
 	if s.aborted() {
-		if endsTransaction(kinds) {
+		if endsTransaction(info.kinds) {
 			s.endAborted()
 			s.forward(msg)
 			return
@@ -423,9 +455,18 @@ func (s *session) handleBind(msg wire.Message) {
 		return
 	}
 
-	if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
+	if v, refused := s.tracker.Admit(info.kinds, time.Now()); refused {
 		s.reject(v.Code, v.Message, v.Rule, true)
 		return
+	}
+
+	s.addOccTables(info.tables)
+	if endsTransaction(info.kinds) {
+		if isCommit(info.kinds) && s.occCommitConflict() {
+			s.occFailure(true)
+			return
+		}
+		s.resetOcc()
 	}
 	s.forward(msg)
 }
@@ -454,10 +495,12 @@ func (s *session) reject(code, message, rule string, extended bool) {
 	s.sendError(code, message, rule)
 
 	if s.tracker.Stats().InTxn {
+		f := txnFailure{statement: abortTransactionQuery, status: 'E', swallow: 1}
 		if extended {
-			s.deferAbortToSync()
+			f.swallow = 2
+			s.deferFailure(f)
 		} else {
-			s.beginAbort(1)
+			s.beginFailure(f)
 		}
 		return
 	}
@@ -485,59 +528,181 @@ func (s *session) rejectFailed(extended bool) {
 	s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: 'E'}))
 }
 
-// beginAbort fails the upstream transaction and swallows the given number of
-// upstream ReadyForQuery messages before completing the client's exchange with
-// a failed-transaction status.
-func (s *session) beginAbort(swallowRFQs int) {
+// beginFailure fails the upstream transaction and suppresses its output until
+// swallow ReadyForQuery messages have gone by, then completes the client's
+// exchange with the failure's status.
+func (s *session) beginFailure(f txnFailure) {
 	s.stateMu.Lock()
-	s.aborting = true
-	s.abortTarget = swallowRFQs
-	s.abortRFQs = 0
-	s.txnAborted = true
+	s.failure = &f
+	s.failureRFQs = 0
+	s.txnAborted = f.status == 'E'
 	s.stateMu.Unlock()
 
-	_ = s.writeUpstream(abortTransactionQuery)
+	_ = s.writeUpstream(f.statement)
 }
 
-// deferAbortToSync waits for the client's Sync, because the upstream is still
-// inside an extended-query batch.
-func (s *session) deferAbortToSync() {
+// deferFailure waits for the client's Sync, because the upstream is still
+// inside an extended-query batch. The failure's swallow count must already
+// include the Sync's own ReadyForQuery.
+func (s *session) deferFailure(f txnFailure) {
 	s.stateMu.Lock()
-	s.abortPending = true
+	s.pendingFailure = &f
 	s.skipSync = true
 	s.stateMu.Unlock()
 }
 
 func (s *session) startRowLimitAbort() {
+	f := txnFailure{statement: abortTransactionQuery, status: 'E', swallow: 2}
 	if s.getInExtended() {
-		s.deferAbortToSync()
+		s.deferFailure(f)
 		return
 	}
-	s.beginAbort(2)
+	s.beginFailure(f)
 }
 
-func (s *session) swallowingAbort() bool {
+func (s *session) failureActive() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	return s.aborting
+	return s.failure != nil
 }
 
-func (s *session) consumeAbortMessage(msg wire.Message) {
+func (s *session) consumeFailureMessage(msg wire.Message) {
 	if msg.Type != 'Z' {
 		return
 	}
 	s.stateMu.Lock()
-	s.abortRFQs++
-	done := s.abortRFQs >= s.abortTarget
-	if done {
-		s.aborting = false
-		s.abortRFQs = 0
+	s.failureRFQs++
+	status := byte('E')
+	done := false
+	if s.failure != nil && s.failureRFQs >= s.failure.swallow {
+		status = s.failure.status
+		s.failure = nil
+		s.failureRFQs = 0
+		done = true
 	}
 	s.stateMu.Unlock()
 
 	if done {
-		s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: 'E'}))
+		s.writeClient(encodeBackend(&pgproto3.ReadyForQuery{TxStatus: status}))
 	}
+}
+
+// addOccTables records the relations a statement touched, for OCC injection.
+func (s *session) addOccTables(tables []string) {
+	if len(tables) == 0 {
+		return
+	}
+	s.stateMu.Lock()
+	if s.occTouched == nil {
+		s.occTouched = make(map[string]bool)
+	}
+	for _, t := range tables {
+		s.occTouched[t] = true
+	}
+	s.stateMu.Unlock()
+}
+
+func (s *session) resetOcc() {
+	s.stateMu.Lock()
+	s.occTouched = nil
+	s.stateMu.Unlock()
+}
+
+// occCommitConflict reports whether this commit should be failed by an
+// injection rule.
+func (s *session) occCommitConflict() bool {
+	occ := s.classifier.Ruleset().OCC
+	if len(occ.Inject) == 0 {
+		return false
+	}
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	for _, inj := range occ.Inject {
+		if len(inj.Tables) > 0 {
+			matched := false
+			for _, t := range inj.Tables {
+				if s.occTouched[t] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		s.occCommits++
+		every := inj.Every
+		if every <= 0 {
+			every = 1
+		}
+		if s.occCommits%every == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// occFailure fails a commit with a conflict, rolling the upstream transaction
+// back instead of committing it.
+func (s *session) occFailure(extended bool) {
+	occ := s.classifier.Ruleset().OCC
+	code := occ.SQLState
+	if code == "" {
+		code = "40001"
+	}
+	message := occ.Error
+	if message == "" {
+		message = "change conflicts with another transaction (OC000)"
+	}
+
+	s.logger.Info("injected occ conflict", "code", code)
+	s.sendError(code, message, "occ_conflict")
+	s.resetOcc()
+
+	f := txnFailure{statement: rollbackQuery, status: 'I', swallow: 1}
+	if extended {
+		f.swallow = 2
+		s.deferFailure(f)
+		return
+	}
+	s.beginFailure(f)
+}
+
+// isCommit reports whether a batch ends with COMMIT.
+func isCommit(kinds []classify.Kind) bool {
+	for _, k := range kinds {
+		if k == classify.KindCommit {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteConflictError rewrites a serialization failure into DSQL's wording.
+func (s *session) rewriteConflictError(msg wire.Message) bool {
+	occ := s.classifier.Ruleset().OCC
+	code := occ.SQLState
+	if code == "" {
+		code = "40001"
+	}
+
+	var er pgproto3.ErrorResponse
+	if err := er.Decode(msg.Body); err != nil || er.Code != code {
+		return false
+	}
+	er.Message = occ.Error
+	if er.Message == "" {
+		er.Message = "change conflicts with another transaction (OC000)"
+	}
+	er.Detail = ""
+	er.Hint = ""
+
+	encoded, err := er.Encode(nil)
+	if err != nil {
+		return false
+	}
+	return s.writeClient(encoded) == nil
 }
 
 func (s *session) endAborted() {
@@ -545,6 +710,7 @@ func (s *session) endAborted() {
 	s.txnAborted = false
 	s.skipSync = false
 	s.stateMu.Unlock()
+	s.resetOcc()
 	s.tracker.Admit([]classify.Kind{classify.KindRollback}, time.Now())
 }
 
@@ -645,7 +811,7 @@ func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.Frontend
 		m.String = rewritten
 	case *pgproto3.Parse:
 		m.Query = rewritten
-		s.statements[m.Name] = kinds
+		s.statements[m.Name] = statementInfo{kinds: kinds}
 	}
 
 	encoded, err := frontend.Encode(nil)
@@ -670,6 +836,12 @@ func (s *session) rewriteSQL(sql string) string {
 	default:
 		return ""
 	}
+}
+
+// statementInfo is what the session remembers about a prepared statement.
+type statementInfo struct {
+	kinds  []classify.Kind
+	tables []string
 }
 
 // asyncIndexResult tracks the synthesized result of an async index build.

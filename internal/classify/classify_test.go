@@ -68,6 +68,8 @@ func TestClassifyRejectsUnsupportedStatements(t *testing.T) {
 		{"alter enum", "ALTER TYPE mood ADD VALUE 'meh'", "alter_enum", "0A000"},
 		{"alter type rename", "ALTER TYPE mood RENAME TO mood2", "rename_type", "0A000"},
 		{"drop type", "DROP TYPE IF EXISTS mood", "drop_type", "0A000"},
+		{"for share", "SELECT 1 FROM t FOR SHARE", "unsupported_locking", "0A000"},
+		{"for no key update", "SELECT 1 FROM t FOR NO KEY UPDATE", "unsupported_locking", "0A000"},
 	}
 
 	for _, tc := range cases {
@@ -106,6 +108,8 @@ func TestClassifyAllowsSupportedStatements(t *testing.T) {
 		"CREATE VIEW v AS SELECT 1 AS x",
 		"CREATE SCHEMA s",
 		"DROP TABLE t",
+		"SELECT 1 FROM t FOR UPDATE",
+		"SELECT 1 FROM t FOR KEY SHARE",
 		"CREATE TABLE t (a smallint, b integer, c bigint, d real, e double precision, f numeric(18,6), g char(5), h varchar(5), i text)",
 		"CREATE TABLE t2 (a date, b time, c timetz, d timestamp, e timestamptz, f interval, g boolean, h bytea, i uuid, j json, k jsonb)",
 		"CREATE TABLE t3 (a int2, b int4, c int8, d float4, e float8, f bool, g bpchar(5), h decimal(10,2))",

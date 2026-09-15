@@ -158,7 +158,7 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 		}),
 		tlsConfig:     p.cfg.TLS,
 		serverVersion: p.cfg.ServerVersion,
-		statements:    make(map[string][]classify.Kind),
+		statements:    make(map[string]statementInfo),
 		txStatus:      'I',
 	}
 

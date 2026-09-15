@@ -26,6 +26,9 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.RenameType) > 0 && !contains(r.RenameType, renameType(node)) {
 		return false
 	}
+	if len(r.Locking) > 0 && !intersects(r.Locking, lockingStrengths(node)) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -94,6 +97,21 @@ func columnTypes(node *pg_query.Node) []string {
 		}
 		if s := names[len(names)-1].GetString_(); s != nil {
 			out = append(out, s.GetSval())
+		}
+	}
+	return out
+}
+
+// lockingStrengths returns the row-locking strengths of a SELECT.
+func lockingStrengths(node *pg_query.Node) []string {
+	sel := node.GetSelectStmt()
+	if sel == nil {
+		return nil
+	}
+	var out []string
+	for _, clause := range sel.GetLockingClause() {
+		if lc := clause.GetLockingClause(); lc != nil {
+			out = append(out, lc.GetStrength().String())
 		}
 	}
 	return out

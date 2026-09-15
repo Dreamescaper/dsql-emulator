@@ -53,10 +53,12 @@ type Verdict struct {
 func (v Verdict) Rejected() bool { return v.Code != "" }
 
 // Result pairs a classification verdict with the kinds of the statements it
-// read. Kinds is populated only when nothing was rejected.
+// read. Kinds and Tables are populated only when nothing was rejected.
 type Result struct {
 	Verdict Verdict
 	Kinds   []Kind
+	// Tables are the relations a DML statement touches, used by OCC injection.
+	Tables []string
 }
 
 // Classifier evaluates SQL against a ruleset.
@@ -106,6 +108,7 @@ func (c *Classifier) Classify(sql string) (Result, error) {
 		}
 
 		result.Kinds = append(result.Kinds, kindOf(node))
+		result.Tables = append(result.Tables, statementTables(node)...)
 	}
 	return result, nil
 }
