@@ -187,10 +187,14 @@ error instead of DSQL's error.
 an event trigger registered for `CREATE INDEX` fires for explicit index
 creation but not for the index a `CREATE TABLE` makes for a key. Its columns,
 lower-case statuses, and `sys.wait_for_job` being a procedure match what the
-recording shows. Two deliberate differences remain: the job id is
-`md5(index name)` on both sides rather than random, so the id handed back can be
-looked up without a round trip, and DSQL additionally records `ANALYZE` and
-`DROP` jobs, which the emulator does not.
+recording shows. The emulator picks the id, hands it to the client, and passes
+it to the backing database in a marker comment on the statement itself
+(`/* dsql_job=<uuid> */ CREATE INDEX ...`), so the id handed back is findable
+without a round trip and each build gets its own id, as a real one does. The
+marker is also what identifies an emulator-issued asynchronous `ALTER TABLE`,
+so only the `ASYNC` form records a validation job. One deliberate difference
+remains: DSQL additionally records `ANALYZE` and `DROP` jobs, which the emulator
+does not.
 
 - `DSQL_PORT` (default 5432) and `DSQL_PG_PORT` (default 5433) move the two
   listeners. `POSTGRES_USER`, `POSTGRES_DB`, and `POSTGRES_HOST_AUTH_METHOD`
@@ -370,7 +374,7 @@ fixture to keep forever.
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
 | M4 | Auth/TLS/version emulation; single DB; UTC/C collation | done (tokens accepted via a trust-backed upstream, not validated) |
-| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | in progress (modes 1 and 2 done; adjudicator and FK fixtures pending) |
+| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | in progress (modes 1 and 2 and the FK conflict fixtures done; the mode 3 adjudicator pending) |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | done |
 | M7 | Conformance harness: golden record + emulator diff | done |
 
@@ -393,8 +397,9 @@ test/conformance/        emulator-vs-golden tests, golden/<group>.json (M7)
 
 ## Verification backlog
 
-Answered by baseline runs on 2026-09-15. The ruleset was reconciled to match,
-and the emulator now reproduces every recorded case:
+Answered by baseline runs on 2026-09-15 and 2026-09-16. The ruleset was
+reconciled to match, and the emulator reproduces every recorded case. Rows
+marked **Open** are questions no recording has answered yet:
 
 | Question | Answer |
 |----------|--------|
@@ -415,6 +420,9 @@ and the emulator now reproduces every recorded case:
 | Aborted transaction | Later statements report `25P02`, `ROLLBACK` ends it, and COMMIT reports the `ROLLBACK` command tag. |
 | A refusal outside a transaction | Does not fail anything; the next implicit transaction runs normally. |
 | Data types | The documented supported set is accepted, including aliases and precision. Every type absent from it is refused with `0A000` "datatype X not supported", and array columns are refused too. Rule added; the deny-list covers the tested set. |
+| Job id shape | **Open.** Two recorded `sys.jobs` rows carry `yoeqoh5bcjgw7kcmwihktdbtgq` and `tpqrncdmjja4tdl3zxo2qqvh4y` — 26 characters each, which is what base32 of sixteen bytes looks like, not a dashed UUID. `CALL sys.wait_for_job('no-such-job')` answering `22P02` "Unable to convert text to UUID" says the id is decoded rather than compared as text. So DSQL appears to render a UUID in base32, and nothing observed confirms whether it would accept the dashed form. The emulator issues dashed UUIDs, which stay consistent with the `uuid` cast that reproduces the verified `22P02`; `sys_jobs_columns` sets `IgnoreRows`, so no probe pins the shape. Settling it needs a probe that calls `wait_for_job` with a real id, which cannot be written while the only observed call returns `42809`. |
+| Types in `ALTER TABLE ADD COLUMN` | Answered 2026-09-16. The `CREATE TABLE` type lists apply: `money` is `0A000 datatype money not supported`, `text[]` is `0A000 datatype text[] not supported` — so an array is just another unsupported datatype there, not a separate rule — and `serial` is `42704 type "serial" does not exist`, the same split `CREATE TABLE` shows. |
+| `ALTER TABLE ALTER COLUMN ... TYPE` | Answered 2026-09-16. Refused outright with `0A000 unsupported ALTER TABLE ALTER COLUMN ... SET DATA TYPE statement`, whatever the target type: `xml` and `varchar(20)` return the identical message, and it names no type where the `ADD COLUMN` refusal does. Rule `alter_column_type` added; the emulator previously allowed a retype to a supported type. |
 | Query-runtime types | Arrays and `inet` work in expressions even though they cannot be columns. |
 | Row locking | `FOR UPDATE` and `FOR KEY SHARE` are accepted; `FOR SHARE` and `FOR NO KEY UPDATE` are refused with `0A000`. Rules added. |
 | Query features | Joins, set operations, `GROUP BY`/`HAVING`/`DISTINCT`, `ORDER BY ... NULLS`, `LIMIT`, CTEs, scalar/`IN`/`EXISTS`/correlated subqueries, `unnest`, `generate_series`, aggregates, `RETURNING`, upsert, `INSERT ... SELECT`, `EXPLAIN`, `ANALYZE`, and `SET CONSTRAINTS` all work. `RANK() OVER (PARTITION BY ...)` works; so do `GROUPING SETS`, `ROLLUP`, `CUBE`, `LATERAL`, `DISTINCT ON`, `ROW_NUMBER`, `LAG`, `WITH RECURSIVE`, and aggregate `FILTER`, which the documentation does not list. |
@@ -427,7 +435,7 @@ and the emulator now reproduces every recorded case:
 | Enums | No user-defined types exist. `CREATE TYPE`, `ALTER TYPE` (add value and rename), and `DROP TYPE` are all refused with `0A000`; a column or cast naming one fails as `42704`. The workarounds work: a `text` column with a `CHECK (m IN (...))`, or a `CREATE DOMAIN ... CHECK (...)` whose domain is supported; a bad label raises `23514`. Rules added for the three statements. |
 | `server_version` | `PostgreSQL 16`. |
 | `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN ... STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA` all match. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` without `NOT VALID` is refused with `0A000 unsupported ALTER TABLE ADD CONSTRAINT statement`, and `VALIDATE CONSTRAINT` only through the `ASYNC` form (`0A000 unsupported ALTER TABLE VALIDATE CONSTRAINT statement` otherwise); the `ASYNC` form returns a `job_id`. Two divergences remain: dropping a primary-key column is refused by DSQL (needs catalog knowledge) and an index built by `CREATE INDEX ASYNC` is immediately valid, where DSQL's is still building, so `ADD CONSTRAINT ... UNIQUE USING INDEX` fails there with `55000`. |
-| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN ... STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA` all match. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` without `NOT VALID` is refused with `0A000 unsupported ALTER TABLE ADD CONSTRAINT statement`, and `VALIDATE CONSTRAINT` only through the `ASYNC` form (`0A000 unsupported ALTER TABLE VALIDATE CONSTRAINT statement` otherwise); the `ASYNC` form returns a `job_id`. Dropping a primary-key column is refused too, enforced by a guard in the backing database that reads the statement, so only the single-action form is checked. One divergence remains: an index built by `CREATE INDEX ASYNC` is immediately valid here where DSQL's is still building, so `ADD CONSTRAINT ... UNIQUE USING INDEX` fails there with `55000`. |
+| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN ... STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA` all match. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` without `NOT VALID` is refused with `0A000 unsupported ALTER TABLE ADD CONSTRAINT statement`, and `VALIDATE CONSTRAINT` only through the `ASYNC` form (`0A000 unsupported ALTER TABLE VALIDATE CONSTRAINT statement` otherwise); the `ASYNC` form returns a `job_id`. `ALTER COLUMN ... TYPE` is refused whatever the target type, and the type lists apply to `ADD COLUMN`. Dropping a primary-key column is refused too, enforced by a guard in the backing database that reads object addresses rather than the statement, so the multi-action form is covered as well. One divergence remains: an index built by `CREATE INDEX ASYNC` is immediately valid here where DSQL's is still building, so `ADD CONSTRAINT ... UNIQUE USING INDEX` fails there with `55000`. |
 | Partial indexes | Supported. `CREATE INDEX ASYNC ... WHERE`, index expressions, `INCLUDE`, `NULLS NOT DISTINCT`, and unnamed indexes all succeed with command tag `CREATE INDEX`. A schema-qualified index name is a syntax error (`42601`) because DSQL always puts the index in the table's schema; the emulator refuses it before forwarding, since PostgreSQL would accept it. |
 | Rejection message text | Recorded verbatim in the golden file. |
 

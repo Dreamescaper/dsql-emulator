@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:49:50.722354Z",
+  "recorded_at": "2026-09-16T18:30:50.287896Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",

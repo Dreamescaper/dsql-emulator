@@ -348,9 +348,78 @@ func TestPgxRoundTripThroughProxy(t *testing.T) {
 		}
 	})
 
-	t.Run("qualified index name is refused", func(t *testing.T) {
+	// The guard reads object addresses rather than the statement text, so the
+	// forms that text matching could not cover are refused too.
+	t.Run("dropping a primary key column is refused whatever the statement looks like", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			create string
+			drop   string
+		}{
+			{
+				name:   "several columns in one statement",
+				create: `create table if not exists alter_pk_multi (id int primary key, a text, b text)`,
+				drop:   `alter table alter_pk_multi drop column a, drop column id`,
+			},
+			{
+				name:   "a member of a composite key",
+				create: `create table if not exists alter_pk_composite (x int, y int, a text, primary key (x, y))`,
+				drop:   `alter table alter_pk_composite drop column y`,
+			},
+			{
+				name:   "a quoted, mixed-case name",
+				create: `create table if not exists "Alter Pk Quoted" ("Id" int primary key, a text)`,
+				drop:   `alter table "Alter Pk Quoted" drop column "Id"`,
+			},
+			{
+				name:   "schema-qualified, with ONLY and IF EXISTS",
+				create: `create table if not exists alter_pk_only (id int primary key, a text)`,
+				drop:   `alter table if exists only public.alter_pk_only drop column if exists id`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := conn.Exec(ctx, tc.create); err != nil {
+					t.Fatalf("create table: %v", err)
+				}
+				_, err := conn.Exec(ctx, tc.drop)
+				assertSQLState(t, err, "0A000")
+			})
+		}
+	})
+
+	t.Run("dropping a table with a primary key still works", func(t *testing.T) {
+		if _, err := conn.Exec(ctx, "create table if not exists alter_pk_droppable (id int primary key)"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "drop table alter_pk_droppable"); err != nil {
+			t.Fatalf("the guard must not fire for DROP TABLE: %v", err)
+		}
+	})
+
+	t.Run("qualified index name is refused as a syntax error", func(t *testing.T) {
 		_, err := conn.Exec(ctx, "CREATE INDEX ASYNC public.widget_qualified_idx ON widget (name)")
 		assertSQLState(t, err, "42601")
+	})
+
+	// Each build gets its own id, the way a real cluster issues them, rather
+	// than one derived from the index name.
+	t.Run("an unnamed async index is recorded under the id it returns", func(t *testing.T) {
+		var jobID string
+		if err := conn.QueryRow(ctx, "CREATE INDEX ASYNC ON widget (name, id)").Scan(&jobID); err != nil {
+			t.Fatalf("create unnamed async index: %v", err)
+		}
+		var jobType, status string
+		if err := conn.QueryRow(ctx,
+			"SELECT job_type, status FROM sys.jobs WHERE job_id = $1", jobID).
+			Scan(&jobType, &status); err != nil {
+			t.Fatalf("the id returned for an unnamed index is not in sys.jobs: %v", err)
+		}
+		if jobType != "INDEX_BUILD" || status != "completed" {
+			t.Fatalf("got job_type %q status %q", jobType, status)
+		}
+		if _, err := conn.Exec(ctx, "CALL sys.wait_for_job($1)", jobID); err != nil {
+			t.Fatalf("wait_for_job on the returned id: %v", err)
+		}
 	})
 
 	t.Run("synchronous index is still refused", func(t *testing.T) {

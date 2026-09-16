@@ -279,18 +279,13 @@ func Save(path string, golden *Golden) error {
 // SaveDir writes one fixture per case group into dir, replacing any fixtures
 // already there so that stale cases cannot linger. Grouping keeps each file
 // small as the suite grows; add finer groups to split further.
+//
+// A record with no cases is refused, and stale fixtures are pruned only once
+// every new one is on disk: a golden record costs a run against a real cluster,
+// so a failed save must never be able to leave the directory empty.
 func SaveDir(dir string, golden *Golden) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	stale, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil {
-		return err
-	}
-	for _, path := range stale {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
+	if golden == nil || len(golden.Cases) == 0 {
+		return errors.New("conformance: refusing to save a golden record with no cases")
 	}
 
 	var order []string
@@ -305,10 +300,30 @@ func SaveDir(dir string, golden *Golden) error {
 		byGroup[c.Group] = append(byGroup[c.Group], c)
 	}
 
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	written := make(map[string]bool, len(order))
 	for _, group := range order {
 		part := *golden
 		part.Cases = byGroup[group]
-		if err := Save(filepath.Join(dir, group+".json"), &part); err != nil {
+		path := filepath.Join(dir, group+".json")
+		if err := Save(path, &part); err != nil {
+			return err
+		}
+		written[path] = true
+	}
+
+	stale, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return err
+	}
+	for _, path := range stale {
+		if written[path] {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
 			return err
 		}
 	}

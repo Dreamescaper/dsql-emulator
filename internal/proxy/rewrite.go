@@ -1,115 +1,78 @@
 package proxy
 
 import (
-	"crypto/md5"
+	"crypto/rand"
 	"encoding/hex"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-// ident matches a SQL identifier, quoted or plain.
-const ident = `"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*`
-
 var (
 	// asyncIndexPattern matches the ASYNC keyword that Aurora DSQL requires on
-	// CREATE INDEX but PostgreSQL's parser does not understand. The rewrite is
-	// textual because libpg_query rejects the statement outright; everything
-	// except the keyword is preserved.
+	// CREATE INDEX but PostgreSQL's parser does not understand, and
+	// asyncAlterPattern the one on the ALTER TABLE form the dialect uses to
+	// validate a constraint in the background.
+	//
+	// Stripping the keyword is textual because libpg_query rejects the
+	// statement outright; everything after that is decided on a real parse tree
+	// of what is left, so these are the only patterns the dialect needs.
 	asyncIndexPattern = regexp.MustCompile(`(?is)^(\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+)ASYNC\s+`)
-	// asyncIndexNamePattern captures the index name, optionally qualified.
-	asyncIndexNamePattern = regexp.MustCompile(
-		`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+ASYNC\s+(?:IF\s+NOT\s+EXISTS\s+)?(` + ident + `)(?:\s*\.\s*(` + ident + `))?\s+ON\b`)
+	asyncAlterPattern = regexp.MustCompile(`(?is)^(\s*ALTER\s+TABLE\s+)ASYNC\s+`)
 )
 
-// asyncIndex is a parsed CREATE INDEX ASYNC statement.
-type asyncIndex struct {
-	rewritten string
-	// name is the unqualified index name, or "" when the statement omits one
-	// and lets the server choose.
-	name string
-	// qualified reports that the index name carried a schema. Aurora DSQL does
-	// not allow that: the index always lands in the table's schema.
-	qualified bool
-}
-
-// parseAsyncIndex recognises a CREATE INDEX ASYNC statement, strips the keyword
-// that PostgreSQL's parser does not understand, and reads the index name. Both
-// the emulator and the backing database derive the job id from that name, so
-// the id returned to the client matches the row the database records.
-func parseAsyncIndex(sql string) (asyncIndex, bool) {
-	if !asyncIndexPattern.MatchString(sql) {
-		return asyncIndex{}, false
+// stripAsync removes the ASYNC keyword matched by pattern, reporting whether
+// the statement carried it.
+func stripAsync(pattern *regexp.Regexp, sql string) (string, bool) {
+	if !pattern.MatchString(sql) {
+		return "", false
 	}
-	rewritten := asyncIndexPattern.ReplaceAllString(sql, "${1}")
+	rewritten := pattern.ReplaceAllString(sql, "${1}")
 	if strings.EqualFold(rewritten, sql) {
-		return asyncIndex{}, false
+		return "", false
 	}
-
-	out := asyncIndex{rewritten: rewritten}
-	if m := asyncIndexNamePattern.FindStringSubmatch(sql); m != nil {
-		out.name = unquoteIdent(m[2])
-		if out.name == "" {
-			out.name = unquoteIdent(m[1])
-		}
-		out.qualified = m[2] != ""
-	}
-	return out, true
+	return rewritten, true
 }
 
-// unquoteIdent folds an identifier the way PostgreSQL would: a quoted name keeps
-// its case and escapes, an unquoted one is lowercased.
-func unquoteIdent(s string) string {
-	if len(s) >= 2 && strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) {
-		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
-	}
-	return strings.ToLower(s)
+// parseAsyncIndex recognises CREATE INDEX ASYNC and strips the keyword, leaving
+// a statement PostgreSQL can parse and the ruleset can be applied to.
+//
+// A schema-qualified index name is left in place on purpose. Aurora DSQL's
+// grammar does not accept one — the index always lands in the table's schema —
+// and neither does PostgreSQL's, so forwarding the stripped statement produces
+// the same `42601 syntax error at or near "."` the dialect reports.
+func parseAsyncIndex(sql string) (string, bool) {
+	return stripAsync(asyncIndexPattern, sql)
 }
-
-// asyncAlter is a parsed ALTER TABLE ASYNC statement. Aurora DSQL uses the ASYNC
-// form to validate a constraint asynchronously, which PostgreSQL's parser does
-// not understand.
-type asyncAlter struct {
-	rewritten string
-	// table is the unqualified table name, or "" when it could not be read.
-	table string
-}
-
-var (
-	asyncAlterPattern     = regexp.MustCompile(`(?is)^(\s*ALTER\s+TABLE\s+)ASYNC\s+`)
-	asyncAlterNamePattern = regexp.MustCompile(
-		`(?is)^\s*ALTER\s+TABLE\s+ASYNC\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(` + ident + `)(?:\s*\.\s*(` + ident + `))?`)
-)
 
 // parseAsyncAlterTable recognises ALTER TABLE ASYNC and strips the keyword.
-func parseAsyncAlterTable(sql string) (asyncAlter, bool) {
-	if !asyncAlterPattern.MatchString(sql) {
-		return asyncAlter{}, false
-	}
-	rewritten := asyncAlterPattern.ReplaceAllString(sql, "${1}")
-	if strings.EqualFold(rewritten, sql) {
-		return asyncAlter{}, false
-	}
-
-	out := asyncAlter{rewritten: rewritten}
-	if m := asyncAlterNamePattern.FindStringSubmatch(sql); m != nil {
-		out.table = unquoteIdent(m[2])
-		if out.table == "" {
-			out.table = unquoteIdent(m[1])
-		}
-	}
-	return out, true
+func parseAsyncAlterTable(sql string) (string, bool) {
+	return stripAsync(asyncAlterPattern, sql)
 }
 
-// jobIDForValidation derives the id of a constraint validation job from the
-// table it runs on, the same way the backing database does. It returns "" when
-// the table name could not be read.
-func jobIDForValidation(table string) string {
-	if table == "" {
-		return ""
+// jobMarker returns the comment that carries a job id down to the backing
+// database, which records it in sys.jobs under that id. Passing the id costs no
+// extra round trip and works for a statement that names no object, such as an
+// unnamed index.
+func jobMarker(jobID string) string {
+	return "/* dsql_job=" + jobID + " */ "
+}
+
+// newJobID returns the identifier for one asynchronous statement. It is a UUID
+// because sys.wait_for_job converts an id to one, and reports anything else as
+// malformed rather than unknown.
+func newJobID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "00000000-0000-0000-0000-000000000000"
 	}
-	sum := md5.Sum([]byte("validate:" + table))
-	return uuidFromMD5(sum)
+	return uuidAsText(buf)
+}
+
+// uuidAsText shapes sixteen random bytes as a UUID.
+func uuidAsText(buf [16]byte) string {
+	h := hex.EncodeToString(buf[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 // serverVersionNum encodes a version the way PostgreSQL's server_version_num
@@ -136,24 +99,4 @@ func serverVersionNum(version string) string {
 		minor, patch = atoi(parts[1]), atoi(parts[2])
 	}
 	return strconv.Itoa(major*10000 + minor*100 + patch)
-}
-
-// jobIDForIndex derives the job id both sides use. Aurora DSQL issues a random
-// id; deriving one from the index name keeps the id handed to the client
-// findable in sys.jobs without a round trip to read it back, and shapes it as a
-// UUID because wait_for_job converts the id to one. It returns "" when the name
-// could not be read.
-func jobIDForIndex(name string) string {
-	if name == "" {
-		return ""
-	}
-	sum := md5.Sum([]byte(name))
-	return uuidFromMD5(sum)
-}
-
-// uuidFromMD5 shapes a digest as a UUID, because wait_for_job converts ids to
-// one.
-func uuidFromMD5(sum [md5.Size]byte) string {
-	h := hex.EncodeToString(sum[:])
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }

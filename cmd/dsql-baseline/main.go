@@ -96,18 +96,20 @@ func main() {
 			fmt.Printf(format+"\n", args...)
 		},
 	})
-	golden.Target = *label
 	if err != nil {
+		// A partial run would record fewer cases than the suite has, so saving
+		// it would replace a complete record with an incomplete one. Recording
+		// costs a run against a real cluster, so leave what is on disk alone.
 		fmt.Fprintf(os.Stderr, "run failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nothing written; the record in %s was left as it was\n", *outDir)
+		os.Exit(1)
 	}
 
+	golden.Target = *label
 	if err := conformance.SaveDir(*outDir, golden); err != nil {
 		fatal("save: %v", err)
 	}
 	fmt.Printf("\nWrote %d cases to %s (one fixture per group)\n", len(golden.Cases), *outDir)
-	if err != nil {
-		os.Exit(1)
-	}
 }
 
 func dsn(user, token, host string, port int, database, sslmode string) string {

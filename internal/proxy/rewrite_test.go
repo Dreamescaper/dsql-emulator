@@ -1,50 +1,47 @@
 package proxy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseAsyncIndex(t *testing.T) {
 	cases := []struct {
 		sql       string
 		rewritten string
-		name      string
-		qualified bool
 	}{
-		{"CREATE INDEX ASYNC idx ON t (a)", "CREATE INDEX idx ON t (a)", "idx", false},
-		{"CREATE UNIQUE INDEX ASYNC idx ON t (a)", "CREATE UNIQUE INDEX idx ON t (a)", "idx", false},
-		{"CREATE INDEX ASYNC IF NOT EXISTS idx ON t (a)", "CREATE INDEX IF NOT EXISTS idx ON t (a)", "idx", false},
-		{"  create index async MyIdx on t (a)", "  create index MyIdx on t (a)", "myidx", false},
-		{`CREATE INDEX ASYNC "MyIdx" ON t (a)`, `CREATE INDEX "MyIdx" ON t (a)`, "MyIdx", false},
-		{`CREATE INDEX ASYNC "My""Idx" ON t (a)`, `CREATE INDEX "My""Idx" ON t (a)`, `My"Idx`, false},
-		// Aurora DSQL puts the index in the table's schema, so a qualified name
-		// is refused rather than rewritten.
-		{"CREATE INDEX ASYNC s.idx ON t (a)", "CREATE INDEX s.idx ON t (a)", "idx", true},
-		{`CREATE INDEX ASYNC "s"."Idx" ON t (a)`, `CREATE INDEX "s"."Idx" ON t (a)`, "Idx", true},
+		{"CREATE INDEX ASYNC idx ON t (a)", "CREATE INDEX idx ON t (a)"},
+		{"CREATE UNIQUE INDEX ASYNC idx ON t (a)", "CREATE UNIQUE INDEX idx ON t (a)"},
+		{"CREATE INDEX ASYNC IF NOT EXISTS idx ON t (a)", "CREATE INDEX IF NOT EXISTS idx ON t (a)"},
+		{"  create index async MyIdx on t (a)", "  create index MyIdx on t (a)"},
+		{`CREATE INDEX ASYNC "MyIdx" ON t (a)`, `CREATE INDEX "MyIdx" ON t (a)`},
+		{`CREATE INDEX ASYNC "My""Idx" ON t (a)`, `CREATE INDEX "My""Idx" ON t (a)`},
+
+		// Aurora DSQL puts the index in the table's schema and its grammar does
+		// not accept a qualified name. The name is left as it was, so
+		// PostgreSQL answers with the same syntax error.
+		{"CREATE INDEX ASYNC s.idx ON t (a)", "CREATE INDEX s.idx ON t (a)"},
+		{`CREATE INDEX ASYNC "s"."Idx" ON t (a)`, `CREATE INDEX "s"."Idx" ON t (a)`},
 
 		// Partial index, the clause this was extended for.
-		{"CREATE INDEX ASYNC idx ON t (a) WHERE a > 0", "CREATE INDEX idx ON t (a) WHERE a > 0", "idx", false},
-		{"CREATE UNIQUE INDEX ASYNC idx ON t (a) WHERE a IS NOT NULL AND b = 'x'", "CREATE UNIQUE INDEX idx ON t (a) WHERE a IS NOT NULL AND b = 'x'", "idx", false},
-		{"CREATE INDEX ASYNC idx ON t (a) INCLUDE (b) WHERE b IS NOT NULL", "CREATE INDEX idx ON t (a) INCLUDE (b) WHERE b IS NOT NULL", "idx", false},
-		{"CREATE UNIQUE INDEX ASYNC idx ON t (a) NULLS NOT DISTINCT", "CREATE UNIQUE INDEX idx ON t (a) NULLS NOT DISTINCT", "idx", false},
+		{"CREATE INDEX ASYNC idx ON t (a) WHERE a > 0", "CREATE INDEX idx ON t (a) WHERE a > 0"},
+		{"CREATE UNIQUE INDEX ASYNC idx ON t (a) WHERE a IS NOT NULL AND b = 'x'", "CREATE UNIQUE INDEX idx ON t (a) WHERE a IS NOT NULL AND b = 'x'"},
+		{"CREATE INDEX ASYNC idx ON t (a) INCLUDE (b) WHERE b IS NOT NULL", "CREATE INDEX idx ON t (a) INCLUDE (b) WHERE b IS NOT NULL"},
+		{"CREATE UNIQUE INDEX ASYNC idx ON t (a) NULLS NOT DISTINCT", "CREATE UNIQUE INDEX idx ON t (a) NULLS NOT DISTINCT"},
 
-		// No name: the server chooses one, so there is nothing to derive a job
-		// id from.
-		{"CREATE INDEX ASYNC ON t ((lower(a)))", "CREATE INDEX ON t ((lower(a)))", "", false},
+		// No name: the server chooses one. The job id does not come from the
+		// name, so this is no different from any other.
+		{"CREATE INDEX ASYNC ON t ((lower(a)))", "CREATE INDEX ON t ((lower(a)))"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.sql, func(t *testing.T) {
-			index, ok := parseAsyncIndex(tc.sql)
+			rewritten, ok := parseAsyncIndex(tc.sql)
 			if !ok {
 				t.Fatalf("%q was not recognised as an async index", tc.sql)
 			}
-			if index.rewritten != tc.rewritten {
-				t.Fatalf("rewrote to %q want %q", index.rewritten, tc.rewritten)
-			}
-			if index.name != tc.name {
-				t.Fatalf("index name %q want %q", index.name, tc.name)
-			}
-			if index.qualified != tc.qualified {
-				t.Fatalf("qualified %v want %v", index.qualified, tc.qualified)
+			if rewritten != tc.rewritten {
+				t.Fatalf("rewrote to %q want %q", rewritten, tc.rewritten)
 			}
 		})
 	}
@@ -58,13 +55,39 @@ func TestParseAsyncIndexLeavesOtherStatementsAlone(t *testing.T) {
 		"SELECT 1",
 		"CREATE TABLE t (id int)",
 	} {
-		index, ok := parseAsyncIndex(sql)
+		rewritten, ok := parseAsyncIndex(sql)
 		if ok {
 			t.Fatalf("%q should not be rewritten", sql)
 		}
-		if index.rewritten != "" || index.name != "" {
-			t.Fatalf("%q: got %+v", sql, index)
+		if rewritten != "" {
+			t.Fatalf("%q: got %q", sql, rewritten)
 		}
+	}
+}
+
+func TestParseAsyncAlterTable(t *testing.T) {
+	rewritten, ok := parseAsyncAlterTable("ALTER TABLE ASYNC t VALIDATE CONSTRAINT c")
+	if !ok {
+		t.Fatal("ALTER TABLE ASYNC was not recognised")
+	}
+	if want := "ALTER TABLE t VALIDATE CONSTRAINT c"; rewritten != want {
+		t.Fatalf("rewrote to %q want %q", rewritten, want)
+	}
+	if _, ok := parseAsyncAlterTable("ALTER TABLE t VALIDATE CONSTRAINT c"); ok {
+		t.Fatal("the synchronous form should not be rewritten")
+	}
+}
+
+// The marker rides on the statement itself, so the backing database records the
+// job under the same id the client is handed.
+func TestJobMarkerCarriesTheJobID(t *testing.T) {
+	id := newJobID()
+	marked := jobMarker(id) + "CREATE INDEX idx ON t (a)"
+	if !strings.Contains(marked, "dsql_job="+id) {
+		t.Fatalf("marker lost the id: %q", marked)
+	}
+	if !strings.HasSuffix(marked, "CREATE INDEX idx ON t (a)") {
+		t.Fatalf("marker did not prefix the statement: %q", marked)
 	}
 }
 
@@ -85,13 +108,19 @@ func TestServerVersionNum(t *testing.T) {
 	}
 }
 
-func TestJobIDForIndex(t *testing.T) {
-	// The backing database derives the id the same way, formatting md5 of the
-	// index name as a UUID, which is also what wait_for_job accepts.
-	if got, want := jobIDForIndex("baseline_idx_value_async"), "a5ffafe2-ce6e-8fbb-ba9f-3fdfe857fcf4"; got != want {
-		t.Fatalf("got %q want %q", got, want)
+// An opaque job id has to be a UUID like a derived one, because wait_for_job
+// converts an id to a UUID before it looks it up.
+func TestNewJobIDIsAUUID(t *testing.T) {
+	id := newJobID()
+	if len(id) != 36 {
+		t.Fatalf("got %q (%d chars) want 36", id, len(id))
 	}
-	if got := jobIDForIndex(""); got != "" {
-		t.Fatalf("got %q want an empty id for an unknown name", got)
+	for _, i := range []int{8, 13, 18, 23} {
+		if id[i] != '-' {
+			t.Fatalf("got %q, want a dash at index %d", id, i)
+		}
+	}
+	if id == newJobID() {
+		t.Fatal("two opaque job ids must differ")
 	}
 }

@@ -38,7 +38,16 @@ unsupported:
 
   - id: serial
     stmt: create_stmt
-    column_type: ["serial", "bigserial", "smallserial"]
+    column_type: &serial_types ["serial", "bigserial", "smallserial"]
+    code: "42704"
+    message: 'type "serial" does not exist'
+
+  # A type is unsupported wherever a column declares it, so ALTER TABLE ADD
+  # COLUMN and ALTER COLUMN TYPE are checked against the same lists. The
+  # anchors keep the two forms from drifting apart.
+  - id: serial_alter_column
+    stmt: alter_table_stmt
+    column_type: *serial_types
     code: "42704"
     message: 'type "serial" does not exist'
 
@@ -53,7 +62,7 @@ unsupported:
   # supported-types page is unsupported. This deny-list covers the tested set.
   - id: unsupported_type
     stmt: create_stmt
-    column_type:
+    column_type: &unsupported_types
       ["money", "xml", "inet", "cidr", "macaddr", "macaddr8", "point", "line",
        "lseg", "box", "path", "polygon", "circle", "tsvector", "tsquery",
        "int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange",
@@ -61,8 +70,31 @@ unsupported:
     code: "0A000"
     message: "datatype not supported"
 
+  # Recorded on 2026-09-16: DSQL refuses the ALTER COLUMN ... TYPE form itself,
+  # whatever the target type. Its message names no type, where the ADD COLUMN
+  # refusal names one ("datatype money not supported"), so this is a statement
+  # restriction rather than a type one. It is ordered before the type rules so
+  # that it, not they, answers a retype to an unsupported type.
+  - id: alter_column_type
+    stmt: alter_table_stmt
+    alter_action: ["AT_AlterColumnType"]
+    code: "0A000"
+    message: "unsupported ALTER TABLE ALTER COLUMN ... SET DATA TYPE statement"
+
+  - id: unsupported_type_alter_column
+    stmt: alter_table_stmt
+    column_type: *unsupported_types
+    code: "0A000"
+    message: "datatype not supported"
+
   - id: array_column
     stmt: create_stmt
+    column_array: true
+    code: "0A000"
+    message: "array columns are not supported"
+
+  - id: array_column_alter_column
+    stmt: alter_table_stmt
     column_array: true
     code: "0A000"
     message: "array columns are not supported"
@@ -178,6 +210,7 @@ unsupported:
   - id: alter_validate_requires_async
     stmt: alter_table_stmt
     alter_action: ["AT_ValidateConstraint"]
+    unless_async: true
     code: "0A000"
     message: "unsupported ALTER TABLE VALIDATE CONSTRAINT statement"
 
@@ -226,6 +259,7 @@ unsupported:
 
   - id: sync_index
     stmt: index_stmt
+    unless_async: true
     code: "0A000"
     message: "unsupported mode. please use CREATE INDEX ASYNC."
 

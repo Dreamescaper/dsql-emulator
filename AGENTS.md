@@ -29,7 +29,7 @@ make build              # build bin/dsql-emu
 make test               # unit tests, no Docker
 make test-integration   # container-backed tests, requires Docker
 make vet                # go vet ./...
-make up                 # start PostgreSQL 17 on host port 5433
+make up                 # start PostgreSQL 16 on host port 5433
 make run                # run the emulator (listen 5432 -> upstream 5433)
 make down               # stop Postgres and remove volumes
 make baseline-dry-run   # print the conformance suite without connecting

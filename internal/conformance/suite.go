@@ -44,17 +44,21 @@ func one(sql string) []string { return []string{sql} }
 // is one request against a metered cluster.
 func setupStatements() []string {
 	return []string{
+		// Tables that reference another table must go first, as they must in
+		// the cleanup. A previous run leaves baseline_alter_fk carrying the
+		// foreign key to baseline_parent that alter_add_fk_not_valid adds, so
+		// dropping the parent first fails with 2BP01 and the run never starts.
 		"DROP TABLE IF EXISTS baseline_conflict_child",
 		"DROP TABLE IF EXISTS baseline_conflict",
 		"DROP TABLE IF EXISTS baseline_child",
-		"DROP TABLE IF EXISTS baseline_parent",
-		"DROP TABLE IF EXISTS baseline_idx",
-		"DROP TABLE IF EXISTS baseline_bulk",
-		"DROP TABLE IF EXISTS baseline_drop_me",
 		"DROP TABLE IF EXISTS baseline_alter_fk",
 		"DROP TABLE IF EXISTS baseline_alter_pk",
 		"DROP TABLE IF EXISTS baseline_alter_big",
 		"DROP TABLE IF EXISTS baseline_alter",
+		"DROP TABLE IF EXISTS baseline_parent",
+		"DROP TABLE IF EXISTS baseline_idx",
+		"DROP TABLE IF EXISTS baseline_bulk",
+		"DROP TABLE IF EXISTS baseline_drop_me",
 		"DROP TABLE IF EXISTS baseline_implicit_bulk",
 		"CREATE TABLE baseline_parent (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)",
 		"CREATE TABLE baseline_child (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), parent_id uuid NOT NULL REFERENCES baseline_parent(id))",
@@ -511,6 +515,17 @@ func alterCases() []Case {
 			"CREATE UNIQUE INDEX ASYNC baseline_alter_big_uq ON baseline_alter_big (big)",
 			"ALTER TABLE baseline_alter_big ADD CONSTRAINT baseline_alter_big_uq UNIQUE USING INDEX baseline_alter_big_uq",
 		}},
+		// The supported-type list applies to a column added or retyped by ALTER
+		// TABLE, not only to one a CREATE TABLE declares. Each probe uses its own
+		// column, so one that unexpectedly succeeds cannot change what the next
+		// one observes.
+		{Name: "alter_add_column_unsupported_type", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD COLUMN bad_money money")},
+		{Name: "alter_add_column_array", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD COLUMN bad_array text[]")},
+		{Name: "alter_add_column_serial", Group: "alters", Steps: one("ALTER TABLE baseline_alter ADD COLUMN bad_serial serial")},
+		{Name: "alter_column_type_unsupported", Group: "alters", Steps: one("ALTER TABLE baseline_alter ALTER COLUMN a TYPE xml")},
+		// The refusal above names no type, so the retype itself is what is
+		// unsupported. This pins that a supported type is refused too.
+		{Name: "alter_column_type_supported", Group: "alters", Steps: one("ALTER TABLE baseline_alter ALTER COLUMN a TYPE varchar(20)")},
 	}
 }
 

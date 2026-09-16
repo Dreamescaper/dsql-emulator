@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -481,6 +484,53 @@ func TestSessionInjectsOccConflictAtCommit(t *testing.T) {
 	}
 }
 
+// Two injection rules that match the same commit must each keep their own
+// count, or one rule's cadence is advanced by the other's matches.
+const twoRuleOccRuleset = `
+dsql_version: "test"
+isolation:
+  supported: ["repeatable read"]
+limits:
+  dml_rows_per_txn: 3000
+  txn_age_seconds: 1800
+occ:
+  error: "change conflicts with another transaction (OC000)"
+  sqlstate: "40001"
+  inject:
+    - id: every_third
+      tables: ["occ_t"]
+      every: 3
+    - id: every_other
+      tables: ["occ_t"]
+      every: 2
+`
+
+func TestSessionCountsEachOccInjectionSeparately(t *testing.T) {
+	rs, err := rules.Load(strings.NewReader(twoRuleOccRuleset))
+	if err != nil {
+		t.Fatalf("load ruleset: %v", err)
+	}
+	ts := newTestSessionWith(t, rs)
+
+	// Neither rule fires on the first commit: one is on its first of three, the
+	// other on its first of two.
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "INSERT INTO occ_t VALUES (1)", "INSERT 0 1", 'T')
+	ts.roundTrip(t, "COMMIT", "COMMIT", 'I')
+
+	// The second commit is the second match for every_other, so it conflicts.
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+	ts.roundTrip(t, "INSERT INTO occ_t VALUES (2)", "INSERT 0 1", 'T')
+	ts.send(t, &pgproto3.Query{String: "COMMIT"})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected a conflict on the second commit")
+	}
+	if er.Code != "40001" {
+		t.Fatalf("got %s want 40001", er.Code)
+	}
+}
+
 func TestSessionInjectsOccOnlyForMatchingTables(t *testing.T) {
 	rs, err := rules.Load(strings.NewReader(occRuleset))
 	if err != nil {
@@ -517,7 +567,7 @@ func TestSessionRewritesSerializationFailure(t *testing.T) {
 // TestSessionReturnsDerivedJobIDForAsyncIndex covers the whole Create Index
 // Async path: the statement is rewritten before it reaches the backend, and the
 // job id handed to the client is the one the backing database derives.
-func TestSessionReturnsDerivedJobIDForAsyncIndex(t *testing.T) {
+func TestSessionReturnsJobIDForAsyncIndex(t *testing.T) {
 	ts := newTestSession(t)
 
 	const sql = "CREATE INDEX ASYNC idx ON t (a)"
@@ -527,8 +577,9 @@ func TestSessionReturnsDerivedJobIDForAsyncIndex(t *testing.T) {
 	if !ok {
 		t.Fatal("expected Parse at the backend")
 	}
-	if parsed.Query != "CREATE INDEX idx ON t (a)" {
-		t.Fatalf("backend received %q, expected the ASYNC keyword removed", parsed.Query)
+	forwardedID := markedJobID(t, parsed.Query)
+	if want := jobMarker(forwardedID) + "CREATE INDEX idx ON t (a)"; parsed.Query != want {
+		t.Fatalf("backend received %q want %q", parsed.Query, want)
 	}
 	ts.sendBackend(t, &pgproto3.ParseComplete{})
 	if _, ok := ts.receive(t).(*pgproto3.ParseComplete); !ok {
@@ -552,8 +603,10 @@ func TestSessionReturnsDerivedJobIDForAsyncIndex(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a DataRow carrying the job id")
 	}
-	if got, want := string(row.Values[0]), jobIDForIndex("idx"); got != want {
-		t.Fatalf("job id %q want %q", got, want)
+	// The id handed to the client is the one the backing database was told to
+	// record the job under.
+	if got := string(row.Values[0]); got != forwardedID {
+		t.Fatalf("client got job id %q, but the statement carried %q", got, forwardedID)
 	}
 
 	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
@@ -574,28 +627,59 @@ func TestSessionForwardsPartialAsyncIndex(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a Query at the backend")
 	}
-	want := "CREATE INDEX idx ON t (a) WHERE a IS NOT NULL"
+	want := jobMarker(markedJobID(t, query.String)) + "CREATE INDEX idx ON t (a) WHERE a IS NOT NULL"
 	if query.String != want {
 		t.Fatalf("backend received %q want %q", query.String, want)
 	}
 }
 
-func TestSessionRejectsQualifiedIndexName(t *testing.T) {
+// Aurora DSQL puts the index in the table's schema and its grammar does not
+// accept a qualified name. PostgreSQL's grammar does not either, so the
+// statement is forwarded with the name intact and the backend supplies the
+// syntax error rather than the emulator hard-coding it.
+func TestSessionForwardsQualifiedIndexNameForTheBackendToRefuse(t *testing.T) {
 	ts := newTestSession(t)
 
 	ts.send(t, &pgproto3.Query{String: "CREATE INDEX ASYNC public.idx ON t (a)"})
 
+	query, ok := ts.receiveBackend(t).(*pgproto3.Query)
+	if !ok {
+		t.Fatal("expected the statement forwarded to the backend")
+	}
+	if !strings.HasSuffix(query.String, "CREATE INDEX public.idx ON t (a)") {
+		t.Fatalf("backend received %q, expected the qualified name left intact", query.String)
+	}
+
+	go func() {
+		ts.sendBackend(t, &pgproto3.ErrorResponse{
+			Severity: "ERROR", Code: "42601", Message: `syntax error at or near "."`,
+		})
+		ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	}()
+
 	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
 	if !ok {
-		t.Fatal("expected an ErrorResponse for a schema-qualified index name")
+		t.Fatal("expected the backend's syntax error to reach the client")
 	}
 	if er.Code != "42601" {
 		t.Fatalf("got SQLSTATE %q want 42601 (%s)", er.Code, er.Message)
 	}
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
-		t.Fatal("expected a ReadyForQuery after the rejection")
+		t.Fatal("expected a ReadyForQuery after the error")
 	}
 }
+
+// markedJobID reads the job id the emulator attached to a forwarded statement.
+func markedJobID(t *testing.T, sql string) string {
+	t.Helper()
+	m := jobMarkerPattern.FindStringSubmatch(sql)
+	if m == nil {
+		t.Fatalf("statement carries no job marker: %q", sql)
+	}
+	return m[1]
+}
+
+var jobMarkerPattern = regexp.MustCompile(`dsql_job=([0-9a-f-]{36})`)
 
 func TestSessionReturnsJobIDForAsyncValidateConstraint(t *testing.T) {
 	ts := newTestSession(t)
@@ -606,7 +690,8 @@ func TestSessionReturnsJobIDForAsyncValidateConstraint(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a Query at the backend")
 	}
-	if want := "ALTER TABLE t VALIDATE CONSTRAINT c"; query.String != want {
+	forwardedID := markedJobID(t, query.String)
+	if want := jobMarker(forwardedID) + "ALTER TABLE t VALIDATE CONSTRAINT c"; query.String != want {
 		t.Fatalf("backend received %q want %q", query.String, want)
 	}
 
@@ -618,8 +703,8 @@ func TestSessionReturnsJobIDForAsyncValidateConstraint(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a DataRow carrying the job id")
 	}
-	if got, want := string(row.Values[0]), jobIDForValidation("t"); got != want {
-		t.Fatalf("job id %q want %q", got, want)
+	if got := string(row.Values[0]); got != forwardedID {
+		t.Fatalf("client got job id %q, but the statement carried %q", got, forwardedID)
 	}
 }
 
@@ -738,5 +823,105 @@ func TestSessionTracksReusedPreparedStatements(t *testing.T) {
 	}
 	if er.Code != "0A000" {
 		t.Fatalf("got SQLSTATE %q want 0A000", er.Code)
+	}
+}
+
+// An asynchronous DDL is admitted where every other prepared statement is, at
+// Bind, so a transaction's single DDL is not spent twice.
+func TestSessionAllowsPreparedAsyncIndexInTransaction(t *testing.T) {
+	ts := newTestSession(t)
+
+	ts.send(t, &pgproto3.Query{String: "BEGIN"})
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Query); !ok {
+		t.Fatal("expected BEGIN forwarded to the backend")
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery after BEGIN")
+	}
+
+	ts.send(t, &pgproto3.Parse{Name: "s1", Query: "CREATE INDEX ASYNC idx ON t (a)"})
+	parse, ok := ts.receiveBackend(t).(*pgproto3.Parse)
+	if !ok {
+		t.Fatal("expected Parse forwarded to the backend")
+	}
+	if want := jobMarker(markedJobID(t, parse.Query)) + "CREATE INDEX idx ON t (a)"; parse.Query != want {
+		t.Fatalf("forwarded %q want %q", parse.Query, want)
+	}
+
+	ts.send(t, &pgproto3.Bind{DestinationPortal: "p1", PreparedStatement: "s1"})
+	msg := ts.receiveBackend(t)
+	if _, ok := msg.(*pgproto3.Bind); !ok {
+		t.Fatalf("expected Bind forwarded to the backend, got %T", msg)
+	}
+}
+
+// A failed asynchronous DDL has no job to report, so no job_id row may be
+// spliced into whatever runs next.
+func TestSessionDropsJobWhenAsyncIndexFails(t *testing.T) {
+	ts := newTestSession(t)
+
+	// One goroutine owns the backend side for the whole exchange, because a
+	// pgproto3.Backend cannot be shared. It refuses the index build, then
+	// answers the statement that follows it.
+	backend := make(chan error, 1)
+	go func() {
+		backend <- func() error {
+			if err := ts.backend.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				return err
+			}
+			if _, err := ts.be.Receive(); err != nil {
+				return fmt.Errorf("receive the index statement: %w", err)
+			}
+			ts.be.Send(&pgproto3.ErrorResponse{
+				Severity: "ERROR", Code: "42P01", Message: `relation "missing" does not exist`,
+			})
+			ts.be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+			if err := ts.be.Flush(); err != nil {
+				return fmt.Errorf("refuse the index build: %w", err)
+			}
+
+			if _, err := ts.be.Receive(); err != nil {
+				return fmt.Errorf("receive the select: %w", err)
+			}
+			ts.be.Send(&pgproto3.RowDescription{Fields: []pgproto3.FieldDescription{{
+				Name: []byte("?column?"), DataTypeOID: 23,
+			}}})
+			ts.be.Send(&pgproto3.DataRow{Values: [][]byte{[]byte("1")}})
+			ts.be.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
+			ts.be.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
+			return ts.be.Flush()
+		}()
+	}()
+
+	ts.send(t, &pgproto3.Query{String: "CREATE INDEX ASYNC idx ON missing (a)"})
+	if _, ok := ts.receive(t).(*pgproto3.ErrorResponse); !ok {
+		t.Fatal("expected the backend error to reach the client")
+	}
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected ReadyForQuery after the failed index build")
+	}
+
+	ts.send(t, &pgproto3.Query{String: "SELECT 1"})
+	var got []string
+	for {
+		msg := ts.receive(t)
+		got = append(got, fmt.Sprintf("%T", msg))
+		if _, done := msg.(*pgproto3.ReadyForQuery); done {
+			break
+		}
+	}
+	if err := <-backend; err != nil {
+		t.Fatalf("backend script: %v", err)
+	}
+
+	want := []string{
+		"*pgproto3.RowDescription",
+		"*pgproto3.DataRow",
+		"*pgproto3.CommandComplete",
+		"*pgproto3.ReadyForQuery",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("client saw %v, want %v", got, want)
 	}
 }

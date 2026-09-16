@@ -74,11 +74,32 @@ func New(rs *rules.Ruleset) *Classifier {
 // Ruleset returns the ruleset the classifier was built with.
 func (c *Classifier) Ruleset() *rules.Ruleset { return c.ruleset }
 
+// options are the per-call settings an Option adjusts.
+type options struct {
+	async bool
+}
+
+// Option steers one classification.
+type Option func(*options)
+
+// AsyncRewritten marks a statement whose ASYNC keyword was stripped before it
+// was parsed, because PostgreSQL's grammar does not accept it. The rules that
+// exist only to require the ASYNC form are skipped, since the client supplied
+// it; every other rule still applies.
+func AsyncRewritten() Option {
+	return func(o *options) { o.async = true }
+}
+
 // Classify parses sql and returns the first rule it violates. A parse error is
 // returned as an error rather than a rejection: unparseable input is not
 // evidence of a DSQL incompatibility and is left for the backing server to
 // answer.
-func (c *Classifier) Classify(sql string) (Result, error) {
+func (c *Classifier) Classify(sql string, opts ...Option) (Result, error) {
+	var o options
+	for _, apply := range opts {
+		apply(&o)
+	}
+
 	res, err := pg_query.Parse(sql)
 	if err != nil {
 		return Result{}, err
@@ -102,6 +123,9 @@ func (c *Classifier) Classify(sql string) (Result, error) {
 		}
 
 		for _, rule := range c.ruleset.Unsupported {
+			if rule.UnlessAsync && o.async {
+				continue
+			}
 			if matches(rule, node) {
 				return Result{Verdict: Verdict{RuleID: rule.ID, Code: rule.Code, Message: rule.Message}}, nil
 			}

@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:49:50.722354Z",
+  "recorded_at": "2026-09-16T18:30:50.287896Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -36,7 +36,7 @@
           ],
           "rows": [
             [
-              "hfzcxsj2szayjkstcisl57j4i4"
+              "srnwmlngyfhcndf5g2e6f3a3xm"
             ]
           ]
         }
@@ -59,7 +59,7 @@
           ],
           "rows": [
             [
-              "dzahd7wd45fcjj3rms5jkbimni"
+              "z2ywbp5lcrfgtayzfzothzwlpu"
             ]
           ]
         }
@@ -81,7 +81,7 @@
           ],
           "rows": [
             [
-              "fv6gvm4jcfa2rb2x2q34o4jma4"
+              "kblweb7dufc6rbvhjubr6hh4ym"
             ]
           ]
         }
@@ -103,7 +103,7 @@
           ],
           "rows": [
             [
-              "ick6futcijf7jczc4dctpkb6z4"
+              "yeu44xoyfjbezfvorthm2ewqn4"
             ]
           ]
         }
@@ -125,7 +125,7 @@
           ],
           "rows": [
             [
-              "mymzjzyzzjbhnijwor37k6q4v4"
+              "hxjrnb3v7zag5eijnjsix6ef6q"
             ]
           ]
         }
@@ -147,7 +147,7 @@
           ],
           "rows": [
             [
-              "rk5iga4qabbgbdq7w3i7tt2xny"
+              "jfk4pq3iifbnrmwyqlnspybbqy"
             ]
           ]
         }
@@ -170,7 +170,7 @@
           ],
           "rows": [
             [
-              "reukq6frbzfmfi5t324ey2hdsu"
+              "fen7wfkdprelrbuxysmv7pnjei"
             ]
           ]
         }
@@ -207,7 +207,7 @@
           ],
           "rows": [
             [
-              "137"
+              "61"
             ]
           ]
         }
@@ -238,15 +238,15 @@
           ],
           "rows": [
             [
-              "yoeqoh5bcjgw7kcmwihktdbtgq",
+              "tpqrncdmjja4tdl3zxo2qqvh4y",
               "completed",
               "NULL",
-              "ANALYZE",
+              "DROP",
               "1259",
-              "26872",
+              "27297",
               "NULL",
-              "2026-09-15T22:19:40Z",
-              "2026-09-15T22:19:42Z"
+              "2026-09-16T18:27:15Z",
+              "2026-09-16T18:27:39Z"
             ]
           ]
         }

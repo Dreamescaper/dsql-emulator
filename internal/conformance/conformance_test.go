@@ -143,6 +143,30 @@ func TestSaveDirAndLoadDirRoundTrip(t *testing.T) {
 	}
 }
 
+// Recording a golden record costs a run against a real cluster, so a save that
+// would leave the directory empty is refused rather than performed.
+func TestSaveDirRefusesToEmptyTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	existing := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "supported")}}
+	if err := conformance.SaveDir(dir, existing); err != nil {
+		t.Fatalf("save dir: %v", err)
+	}
+
+	for _, empty := range []*conformance.Golden{nil, {Suite: "s"}} {
+		if err := conformance.SaveDir(dir, empty); err == nil {
+			t.Fatal("expected a record with no cases to be refused")
+		}
+	}
+
+	loaded, err := conformance.LoadDir(dir)
+	if err != nil {
+		t.Fatalf("load dir: %v", err)
+	}
+	if len(loaded.Cases) != 1 {
+		t.Fatalf("the existing record was disturbed: %d cases, want 1", len(loaded.Cases))
+	}
+}
+
 func TestSaveDirReplacesStaleFixtures(t *testing.T) {
 	dir := t.TempDir()
 	first := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "old_group")}}

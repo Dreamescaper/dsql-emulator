@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-15T22:49:50.722354Z",
+  "recorded_at": "2026-09-16T18:30:50.287896Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -135,6 +135,7 @@
       "steps": [
         "ALTER TABLE ASYNC baseline_alter_fk VALIDATE CONSTRAINT alter_fk"
       ],
+      "ignore_rows": true,
       "observations": [
         {
           "outcome": "ok",
@@ -144,7 +145,7 @@
           ],
           "rows": [
             [
-              "wk3vg7ytsfev3hbmd2zr5cfxq4"
+              "6putf6tsgndd5li4ks7biloseu"
             ]
           ]
         }
@@ -172,6 +173,8 @@
         "CREATE UNIQUE INDEX ASYNC baseline_alter_big_uq ON baseline_alter_big (big)",
         "ALTER TABLE baseline_alter_big ADD CONSTRAINT baseline_alter_big_uq UNIQUE USING INDEX baseline_alter_big_uq"
       ],
+      "ignore_rows": true,
+      "known_gap": "DSQL builds the index asynchronously, so it is not yet valid when the constraint is added (55000); the emulator builds synchronously",
       "observations": [
         {
           "outcome": "ok",
@@ -181,7 +184,7 @@
           ],
           "rows": [
             [
-              "ajq6hpqiyjgghdpjwnsyfisvly"
+              "hxgkibzp2fglpchvuv45soei3u"
             ]
           ]
         },
@@ -189,6 +192,76 @@
           "outcome": "error",
           "sqlstate": "55000",
           "message": "index \"baseline_alter_big_uq\" is not valid"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_column_unsupported_type",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD COLUMN bad_money money"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype money not supported"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_column_array",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD COLUMN bad_array text[]"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "datatype text[] not supported"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_column_serial",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ADD COLUMN bad_serial serial"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42704",
+          "message": "type \"serial\" does not exist"
+        }
+      ]
+    },
+    {
+      "name": "alter_column_type_unsupported",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ALTER COLUMN a TYPE xml"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ALTER COLUMN ... SET DATA TYPE statement"
+        }
+      ]
+    },
+    {
+      "name": "alter_column_type_supported",
+      "group": "alters",
+      "steps": [
+        "ALTER TABLE baseline_alter ALTER COLUMN a TYPE varchar(20)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ALTER COLUMN ... SET DATA TYPE statement"
         }
       ]
     }

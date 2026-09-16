@@ -19,9 +19,10 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 207 probes, and the emulator is diffed against it. A
+real cluster answered for 212 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
-silently passing.
+silently passing. Every probe in the suite is currently recorded, and the
+emulator matches all of them but one accepted divergence.
 
 ## Quick start
 
@@ -78,11 +79,11 @@ conn, err := pgx.Connect(ctx, dsn)
 | Area | Behavior |
 |------|----------|
 | Connection | PostgreSQL wire protocol, TLS termination so `sslmode=require` works, the `admin` user DSQL uses, `server_version` `16.15` and `version()` `PostgreSQL 16`, `REPEATABLE READ` pinned |
-| Dialect | Around forty rules over a real parse tree: `TRUNCATE`, extensions, triggers, extra databases, temporary and unlogged tables, `serial`, materialized views, `CREATE TABLE AS`, custom types, tablespaces, foreign tables, `VACUUM`, `LISTEN`/`NOTIFY`, `ALTER SYSTEM`, `MERGE`, `TABLESAMPLE`, text search, geometric types, and more |
+| Dialect | Forty-five rules over a real parse tree: `TRUNCATE`, extensions, triggers, extra databases, temporary and unlogged tables, `serial`, materialized views, `CREATE TABLE AS`, custom types, tablespaces, foreign tables, `VACUUM`, `LISTEN`/`NOTIFY`, `ALTER SYSTEM`, `MERGE`, `TABLESAMPLE`, text search, geometric types, and more |
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
-| Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them |
+| Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them. The list applies to a column added by `ALTER TABLE ADD COLUMN` as well as one a `CREATE TABLE` declares |
 | Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
-| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused |
+| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. `ALTER COLUMN ... TYPE` is refused whatever the target type, and dropping a primary-key column is refused. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused |
 | OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
@@ -98,20 +99,14 @@ conn, err := pgx.Connect(ctx, dsn)
   rewritten, so PostgreSQL rejects it with a syntax error where DSQL reports its
   own error (usually `0A000`, since it refuses more than one DDL per
   transaction).
-- **The primary-key-column guard reads the statement text.** DSQL refuses to
-  drop a primary-key column; the emulator enforces that in the backing database,
-  which has the catalog to check against, but an event trigger there sees only
-  the statement text, so only the single-action form is inspected. A
-  multi-action `ALTER TABLE ... DROP COLUMN a, DROP COLUMN b` is not, and can
-  still lose a key.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
-  columns, statuses, and `sys.wait_for_job` being a procedure. Two differences
-  remain: the job id is a UUID derived from the index name (DSQL issues random
-  ids) so the id handed back can be looked up, and DSQL also records `ANALYZE`
-  and `DROP` jobs. Two cases return an id with no row, because no name can be
-  derived: `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists,
-  and an unnamed index whose name the server chooses.
+  columns, statuses, and `sys.wait_for_job` being a procedure. DSQL also records
+  `ANALYZE` and `DROP` jobs, which the emulator does not, and its ids are 26
+  characters (`tpqrncdmjja4tdl3zxo2qqvh4y`) where the emulator's are UUIDs. One
+  case returns an id with no row:
+  `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists builds
+  nothing, so there is no job to record.
 - **The reported version leaks on unusual paths.** `version()`,
   `SHOW server_version`, `current_setting('server_version')`,
   `current_setting('server_version_num')`, and `SHOW server_version_num` are

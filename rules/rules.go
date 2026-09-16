@@ -66,6 +66,10 @@ type Rule struct {
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`
+	// UnlessAsync marks a rule that exists only to require the dialect's ASYNC
+	// form. It does not apply to a statement that carried ASYNC, because the
+	// keyword is stripped before the statement is parsed.
+	UnlessAsync bool `yaml:"unless_async"`
 	// SequenceCacheMin and IdentityCacheMin reject a sequence, or an identity
 	// column, whose CACHE is missing or smaller than the minimum, unless the
 	// value appears in CacheAllow.

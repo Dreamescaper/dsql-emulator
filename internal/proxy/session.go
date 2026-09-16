@@ -2,9 +2,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -91,12 +89,9 @@ type session struct {
 	// the upstream extended-query batch is still open.
 	pendingFailure *txnFailure
 	// occTouched are the relations the current transaction has written, and
-	// occCommits counts commits that matched an injection rule.
+	// occCommits counts, per injection rule, the commits that matched it.
 	occTouched map[string]bool
-	occCommits int
-	// inExtended is true between an extended-protocol message and the Sync that
-	// closes its batch.
-	inExtended bool
+	occCommits map[int]int
 
 	// job, when set, is the result the emulator synthesizes for the
 	// asynchronous statement in flight; described records whether the client's
@@ -215,6 +210,9 @@ func (s *session) pumpBackend() {
 				continue
 			}
 		case 'E':
+			// The asynchronous statement failed, so there is no job to report.
+			// Leaving it set would splice a job_id row into the next result.
+			s.takeJob()
 			if s.rewriteConflictError(msg) {
 				continue
 			}
@@ -223,6 +221,9 @@ func (s *session) pumpBackend() {
 				continue
 			}
 		case 'Z':
+			// A job not claimed by a CommandComplete by the end of the exchange
+			// belongs to no later statement.
+			s.takeJob()
 			var rfq pgproto3.ReadyForQuery
 			if err := rfq.Decode(msg.Body); err == nil {
 				s.setStateTxStatus(rfq.TxStatus)
@@ -271,16 +272,12 @@ func (s *session) pumpFrontend() {
 
 		switch msg.Type {
 		case 'Q':
-			s.markExtended(false)
 			s.handleQuery(msg)
 		case 'P':
-			s.markExtended(true)
 			s.handleParse(msg)
 		case 'B':
-			s.markExtended(true)
 			s.handleBind(msg)
 		case 'D', 'E':
-			s.markExtended(true)
 			s.forward(msg)
 		case 'C':
 			s.handleClose(msg)
@@ -291,8 +288,6 @@ func (s *session) pumpFrontend() {
 }
 
 func (s *session) handleSync(msg wire.Message) {
-	s.markExtended(false)
-
 	s.stateMu.Lock()
 	pending := s.pendingFailure
 	s.pendingFailure = nil
@@ -320,12 +315,12 @@ func (s *session) handleQuery(msg wire.Message) {
 		return
 	}
 
-	if index, ok := parseAsyncIndex(query.String); ok {
-		s.forwardAsyncIndex(msg, query, index, false)
+	if rewritten, ok := parseAsyncIndex(query.String); ok {
+		s.forwardAsyncJob(msg, query, rewritten, false)
 		return
 	}
-	if alter, ok := parseAsyncAlterTable(query.String); ok {
-		s.forwardAsyncAlterTable(msg, query, alter, false)
+	if rewritten, ok := parseAsyncAlterTable(query.String); ok {
+		s.forwardAsyncJob(msg, query, rewritten, false)
 		return
 	}
 
@@ -386,12 +381,12 @@ func (s *session) handleParse(msg wire.Message) {
 		return
 	}
 
-	if index, ok := parseAsyncIndex(parse.Query); ok {
-		s.forwardAsyncIndex(msg, parse, index, true)
+	if rewritten, ok := parseAsyncIndex(parse.Query); ok {
+		s.forwardAsyncJob(msg, parse, rewritten, true)
 		return
 	}
-	if alter, ok := parseAsyncAlterTable(parse.Query); ok {
-		s.forwardAsyncAlterTable(msg, parse, alter, true)
+	if rewritten, ok := parseAsyncAlterTable(parse.Query); ok {
+		s.forwardAsyncJob(msg, parse, rewritten, true)
 		return
 	}
 
@@ -476,7 +471,22 @@ func (s *session) handleBind(msg wire.Message) {
 		}
 		s.resetOcc()
 	}
+	if info.jobID != "" {
+		s.restoreJob(info.jobID)
+	}
 	s.forward(msg)
+}
+
+// restoreJob arms the job result for a prepared asynchronous statement that is
+// being executed again. The Parse that introduced it already armed the first
+// execution, along with the row description its Describe produced, so an
+// armed job is left alone.
+func (s *session) restoreJob(jobID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.job == nil {
+		s.job = &jobResult{jobID: jobID}
+	}
 }
 
 func (s *session) handleClose(msg wire.Message) {
@@ -617,7 +627,7 @@ func (s *session) occCommitConflict() bool {
 
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	for _, inj := range occ.Inject {
+	for i, inj := range occ.Inject {
 		if len(inj.Tables) > 0 {
 			matched := false
 			for _, t := range inj.Tables {
@@ -630,12 +640,17 @@ func (s *session) occCommitConflict() bool {
 				continue
 			}
 		}
-		s.occCommits++
+		// Each rule counts its own matches, so one rule's "every third commit"
+		// is not advanced by another rule matching the same commit.
+		if s.occCommits == nil {
+			s.occCommits = make(map[int]int)
+		}
+		s.occCommits[i]++
 		every := inj.Every
 		if every <= 0 {
 			every = 1
 		}
-		if s.occCommits%every == 0 {
+		if s.occCommits[i]%every == 0 {
 			return true
 		}
 	}
@@ -719,18 +734,6 @@ func (s *session) aborted() bool {
 	return s.txnAborted
 }
 
-func (s *session) getInExtended() bool {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return s.inExtended
-}
-
-func (s *session) markExtended(in bool) {
-	s.stateMu.Lock()
-	s.inExtended = in
-	s.stateMu.Unlock()
-}
-
 func (s *session) droppingUntilSync() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -781,51 +784,43 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 	return s.writeClient(encoded) == nil
 }
 
-// forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
-// the PostgreSQL parser cannot read. It applies the transaction rules as DDL,
-// then forwards the rewritten statement so the index is built synchronously.
-// forwardAsyncAlterTable handles ALTER TABLE ASYNC, used by the dialect to
-// validate a constraint in the background. It is forwarded without the keyword
-// and answered with the job id the dialect returns.
-func (s *session) forwardAsyncAlterTable(msg wire.Message, frontend pgproto3.FrontendMessage, alter asyncAlter, extended bool) {
-	s.forwardAsyncJob(msg, frontend, alter.rewritten, jobIDForValidation(alter.table), extended)
-}
-
-// forwardAsyncIndex handles CREATE INDEX ASYNC, which the dialect requires but
-// PostgreSQL's parser cannot read. It applies the transaction rules as DDL,
-// then forwards the rewritten statement so the index is built synchronously.
-func (s *session) forwardAsyncIndex(msg wire.Message, frontend pgproto3.FrontendMessage, index asyncIndex, extended bool) {
-	// Aurora DSQL puts the index in the table's schema; its grammar does not
-	// accept a qualified name, and it reports that as a syntax error.
-	if index.qualified {
-		s.logger.Info("rejected statement", "rule", "qualified_index", "code", "42601")
-		s.reject("42601", `syntax error at or near "."`, "qualified_index", extended)
-		return
-	}
-
-	s.forwardAsyncJob(msg, frontend, index.rewritten, jobIDForIndex(index.name), extended)
-}
-
-// forwardAsyncJob applies the transaction rules as DDL, then forwards a
-// rewritten asynchronous statement and arranges for a job id to be returned
-// with its result.
-func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten, jobID string, extended bool) {
-	kinds := []classify.Kind{classify.KindDDL}
-
+// forwardAsyncJob handles the statements the dialect spells with ASYNC, which
+// PostgreSQL's parser cannot read: CREATE INDEX ASYNC, and the ALTER TABLE ASYNC
+// that validates a constraint in the background. The keyword has already been
+// stripped, so rewritten is a statement the ruleset can be applied to; it is
+// then forwarded with a job id marker and answered with that id.
+func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten string, extended bool) {
 	if s.aborted() {
 		s.rejectFailed(extended)
 		return
 	}
-	if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
-		s.reject(v.Code, v.Message, v.Rule, extended)
-		return
+
+	// The statement is classified without the rules that exist only to require
+	// ASYNC, which the client did supply. An unparseable one is forwarded, as
+	// any other is: a schema-qualified index name reaches PostgreSQL and comes
+	// back with the same syntax error the dialect reports.
+	kinds := []classify.Kind{classify.KindDDL}
+	if result, err := s.classifier.Classify(rewritten, classify.AsyncRewritten()); err == nil {
+		if result.Verdict.Rejected() {
+			s.reject(result.Verdict.Code, result.Verdict.Message, result.Verdict.RuleID, extended)
+			return
+		}
+		if len(result.Kinds) > 0 {
+			kinds = result.Kinds
+		}
 	}
 
-	if jobID == "" {
-		// The job id could not be derived, so the row the database records
-		// cannot be found by it; hand back an opaque one instead.
-		jobID = newJobID()
+	// A prepared statement is admitted when it is bound, like any other, so
+	// admitting here too would spend the transaction's single DDL twice.
+	if !extended {
+		if v, refused := s.tracker.Admit(kinds, time.Now()); refused {
+			s.reject(v.Code, v.Message, v.Rule, extended)
+			return
+		}
 	}
+
+	jobID := newJobID()
+	marked := jobMarker(jobID) + rewritten
 
 	s.stateMu.Lock()
 	s.job = &jobResult{jobID: jobID}
@@ -833,10 +828,10 @@ func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMe
 
 	switch m := frontend.(type) {
 	case *pgproto3.Query:
-		m.String = rewritten
+		m.String = marked
 	case *pgproto3.Parse:
-		m.Query = rewritten
-		s.statements[m.Name] = statementInfo{kinds: kinds}
+		m.Query = marked
+		s.statements[m.Name] = statementInfo{kinds: kinds, jobID: jobID}
 	}
 
 	encoded, err := frontend.Encode(nil)
@@ -902,6 +897,9 @@ func (s *session) rewriteCommandTag(msg wire.Message) ([]byte, bool) {
 type statementInfo struct {
 	kinds  []classify.Kind
 	tables []string
+	// jobID is set for an asynchronous statement, so a cached prepared
+	// statement re-executed without a new Parse still answers with one.
+	jobID string
 }
 
 // jobResult tracks the synthesized result of an asynchronous statement, which
@@ -944,15 +942,6 @@ func jobIDRowDescription() []byte {
 
 func jobIDDataRow(id string) []byte {
 	return encodeBackend(&pgproto3.DataRow{Values: [][]byte{[]byte(id)}})
-}
-
-// newJobID returns an opaque identifier shaped like the ones DSQL issues.
-func newJobID() string {
-	buf := make([]byte, 13)
-	if _, err := rand.Read(buf); err != nil {
-		return "0000000000000000000000000"
-	}
-	return hex.EncodeToString(buf)
 }
 
 func (s *session) sendError(code, message, rule string) {

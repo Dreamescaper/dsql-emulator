@@ -6,16 +6,21 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**M7 complete, M3 complete.** The record holds 65 probes; the emulator matches
-all of them except the two M6 gaps (`CREATE INDEX ASYNC`, `sys.jobs`). Refusals
-inside a transaction fail it exactly as Aurora DSQL does.
+**Every milestone done except M5, which still lacks the OCC adjudicator.** The
+golden record was re-recorded on 2026-09-16 and holds all 212 probes the suite
+defines; the emulator matches every one except the accepted
+`alter_unique_using_index` gap, and nothing is unrecorded. Refusals inside a
+transaction fail it exactly as Aurora DSQL does, `CREATE INDEX ASYNC` and
+`sys.jobs` are implemented, and the conformance suite covers concurrent
+sessions. Three mechanisms that read SQL as text now read structure instead,
+which closed the limitations that came with them.
 
-Last updated: 2026-09-15.
+Last updated: 2026-09-16.
 
 ## How to run
 
 ```sh
-make up          # start PostgreSQL 17 (host port 5433)
+make up          # start PostgreSQL 16 (host port 5433)
 make run         # start the emulator on 127.0.0.1:5432 -> upstream 5433
 psql -h 127.0.0.1 -p 5432 -U postgres
 ```
@@ -33,6 +38,255 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Re-recorded the baseline; ALTER COLUMN TYPE was wrong (2026-09-16)
+
+Ran `dsql-baseline` against the cluster in `eu-central-1` with a fresh token.
+The record now holds all 212 probes the suite defines and the emulator matches
+every one of them, with the single accepted `alter_unique_using_index` gap. The
+run drops everything it creates and reported no cleanup skips.
+
+**The four ALTER TABLE type probes confirmed the rules added earlier**, codes
+and all:
+
+| probe | DSQL |
+|-------|------|
+| `ADD COLUMN bad_money money` | `0A000 datatype money not supported` |
+| `ADD COLUMN bad_array text[]` | `0A000 datatype text[] not supported` |
+| `ADD COLUMN bad_serial serial` | `42704 type "serial" does not exist` |
+| `ALTER COLUMN a TYPE xml` | `0A000 unsupported ALTER TABLE ALTER COLUMN ... SET DATA TYPE statement` |
+
+Two things the messages settled that the codes alone did not. An array column is
+just another unsupported datatype to DSQL (`datatype text[] not supported`),
+not the separate concept the emulator's wording implies. And the retype refusal
+**names no type**, where the `ADD COLUMN` refusal names one — so DSQL refuses
+the `ALTER COLUMN ... TYPE` form itself, not the type it targets.
+
+**That last one was a real divergence, and the reasoning that produced it was
+mine.** Earlier today the emulator was given the type lists for
+`ALTER COLUMN ... TYPE` on the assumption that they applied there as they do to
+`CREATE TABLE`, and a test asserted `ALTER COLUMN c TYPE bigint` was *allowed*.
+It is not. A probe with a supported type
+(`ALTER COLUMN a TYPE varchar(20)`, added and recorded in a second run) comes
+back with the identical refusal. Rule `alter_column_type` now refuses the form
+outright, ordered ahead of the type rules so its wording is the one reported.
+The conformance suite had not caught it because its only retype probe used
+`xml`, which both sides refused for different reasons.
+
+**A setup ordering bug surfaced on the first attempt.** `setupStatements()`
+dropped `baseline_parent` before `baseline_alter_fk`, which carries the foreign
+key `alter_add_fk_not_valid` adds to it, so a re-run against a cluster holding
+the previous run's objects failed at setup with `2BP01`.
+`cleanupStatements()` already ordered dependents first; setup now does too.
+
+**The save guard added earlier today did its job on that failure.** The run
+aborted during setup with zero cases recorded, and the command exited with
+`nothing written; the record in test/conformance/golden was left as it was`.
+Under the previous code `SaveDir` would have deleted all thirteen fixtures
+before discovering it had nothing to write.
+
+Verification:
+
+```
+$ go build ./... && go vet ./... && go vet -tags integration ./... && gofmt -l .
+(no output)
+$ go test -race ./...
+ok  github.com/Dreamescaper/dsql-emulator/internal/classify     1.5s
+ok  github.com/Dreamescaper/dsql-emulator/internal/conformance  1.9s
+ok  github.com/Dreamescaper/dsql-emulator/internal/proxy        2.8s
+ok  github.com/Dreamescaper/dsql-emulator/internal/txn          2.9s
+ok  github.com/Dreamescaper/dsql-emulator/internal/wire         2.1s
+$ go test -tags integration -count=1 ./test/...
+212 cases match the golden record
+ok  github.com/Dreamescaper/dsql-emulator/test/conformance  2.6s
+ok  github.com/Dreamescaper/dsql-emulator/test/integration  2.8s
+```
+
+Still open: the job id shape. A second sample (`tpqrncdmjja4tdl3zxo2qqvh4y`)
+confirms DSQL's ids are 26 characters, the length base32 of sixteen bytes
+produces, while the emulator issues dashed UUIDs. `wait_for_job` reporting
+`22P02 Unable to convert text to UUID` says it decodes rather than compares, so
+DSQL is most likely rendering a UUID in base32 — but nothing observed says
+whether it would accept the dashed form, and the only recorded call with a real
+id returns `42809` because it is a procedure. Left as an open row in
+`PLAN.md` rather than changed on a guess.
+
+### Replaced three text-matching workarounds with structural ones (2026-09-16)
+
+A follow-up to the review: each of these worked by reading SQL as text, and each
+carried a documented limitation because of it. All three now read structure that
+PostgreSQL already reports. Every claim below was checked against a real server
+before the change was written.
+
+**The primary-key-column guard** (`docker/init/05-alter-guard.sql`) matched
+`current_query()` with a regex, so it inspected only the single-action form and
+a `DROP COLUMN a, DROP COLUMN id` could still lose a key. It is now two event
+triggers: `ddl_command_start` snapshots every primary key column as
+`<table oid>:<attnum>`, and `sql_drop` compares that against the object
+addresses of the columns the command actually dropped. No statement text is
+read, so quoting, `IF EXISTS`, `ONLY`, schema qualification and multi-action
+commands all fall out for free. `sql_drop` fires after the drop but inside the
+same transaction, so raising there fails the statement and aborts the
+transaction exactly as refusing up front did.
+
+**The `ASYNC` rewrite** (`internal/proxy/rewrite.go`) used one regex to strip the
+keyword libpg_query cannot parse and a second to dig the index name back out.
+Only the first was forced. The stripped statement is now parsed, which supplies
+everything the second regex did — correctly folded by PostgreSQL rather than by
+a hand-written `unquoteIdent` — and, more importantly, means the ruleset is
+applied to an asynchronous statement at all. It was not before:
+`forwardAsyncJob` never called `Classify`, so any rule keyed on `index_stmt`
+silently did not apply to the `ASYNC` form. The two rules that exist only to
+require `ASYNC` are marked `unless_async: true` in the ruleset and skipped
+through the new `classify.AsyncRewritten()` option; every other rule now
+applies. A schema-qualified index name is no longer special-cased in Go: neither
+grammar accepts one, so the statement is forwarded and PostgreSQL answers with
+the same `42601 syntax error at or near "."` the dialect reports.
+
+**The job id** (`docker/init/04-jobs.sql`, `internal/proxy/rewrite.go`) was
+`md5(object name)` computed identically on both sides. That failed when there
+was no name to derive from, and made a rebuilt index reuse its old id where a
+real cluster issues a fresh one. The emulator now picks the id and passes it
+down in a marker comment on the statement itself
+(`/* dsql_job=<uuid> */ CREATE INDEX ...`), which the event trigger reads from
+`current_query()`. One statement, no extra round trip, and the unnamed-index
+case works. The marker also identifies an emulator-issued asynchronous `ALTER
+TABLE`, which replaced a second regex over `current_query()` that looked for
+`VALIDATE CONSTRAINT`.
+
+Deleted with them: `asyncIndexNamePattern`, `asyncAlterNamePattern`,
+`unquoteIdent`, the `ident` pattern, `jobIDForIndex`, `jobIDForValidation`, the
+`asyncIndex`/`asyncAlter` structs, `forwardAsyncIndex`, `forwardAsyncAlterTable`,
+and the hard-coded `42601` rejection.
+
+Verification:
+
+```
+$ go build ./... && go vet ./... && go vet -tags integration ./... && gofmt -l .
+(no output)
+$ go test -race ./...
+ok  github.com/Dreamescaper/dsql-emulator/internal/classify     1.4s
+ok  github.com/Dreamescaper/dsql-emulator/internal/conformance  0.3s
+ok  github.com/Dreamescaper/dsql-emulator/internal/proxy        2.0s
+ok  github.com/Dreamescaper/dsql-emulator/internal/txn          0.9s
+ok  github.com/Dreamescaper/dsql-emulator/internal/wire         0.5s
+$ go test -tags integration -count=1 ./test/...
+ok  github.com/Dreamescaper/dsql-emulator/test/conformance  2.4s
+ok  github.com/Dreamescaper/dsql-emulator/test/integration  2.9s
+```
+
+Conformance still reports 207 cases matching, the one known gap unchanged, and
+the four probes added earlier today still uncovered.
+
+Coverage added to `test/integration/proxy_test.go`: four forms of the primary
+key column drop (several columns in one statement, a composite key member, a
+quoted mixed-case name, schema-qualified with `ONLY` and `IF EXISTS`), a check
+that `DROP TABLE` does not trip the guard, and an unnamed `CREATE INDEX ASYNC`
+whose returned id must be findable in `sys.jobs` and accepted by
+`wait_for_job`. The multi-column case fails against the previous guard and
+passes against this one; the other three the regex already handled, which the
+run confirmed rather than assumed.
+
+Known gaps, unchanged or newly visible:
+
+- `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists still
+  returns an id with no `sys.jobs` row, because nothing is built and
+  `pg_event_trigger_ddl_commands()` reports no command. This is no longer about
+  deriving a name.
+- The recorded `sys.jobs` row shows a real DSQL job id of
+  `yoeqoh5bcjgw7kcmwihktdbtgq` — 26 characters, the length base32 of sixteen
+  bytes produces, not a dashed UUID. The emulator issues UUIDs, which stay
+  consistent with the `uuid` cast in `wait_for_job` that reproduces the
+  verified `22P02` for a malformed id. Recorded as an open question in
+  `PLAN.md` rather than guessed at; `sys_jobs_columns` sets `IgnoreRows`, so
+  nothing in the suite pins the shape either way.
+
+### Repository review: fixed nine findings (2026-09-16)
+
+A read of the whole repository, with each behavioral finding confirmed by a
+throwaway test before it was fixed.
+
+Correctness:
+
+- `cmd/dsql-baseline/main.go`, `internal/conformance/record.go` — a failed
+  baseline run used to save its partial record, and `SaveDir` deleted every
+  fixture in the directory before writing. A failure at any point in a 207-probe
+  run therefore destroyed the golden record, which costs a metered cluster run
+  to rebuild. The command now exits without saving when the run fails, `SaveDir`
+  refuses a record with no cases, and it prunes stale fixtures only after every
+  new one is on disk. The same change removes a nil dereference on the
+  `RunSuite` connect-failure path, where `golden.Target` was assigned before the
+  error was checked.
+- `internal/proxy/session.go` — a `CREATE INDEX ASYNC` that the backend refused
+  left the synthesized job armed, so the next successful statement had a second
+  `RowDescription` and a `job_id` row spliced into its result set, which is not
+  legal protocol. The job is now dropped on `ErrorResponse`, and on
+  `ReadyForQuery` as a backstop.
+- `internal/proxy/session.go` — an async DDL was admitted to the transaction
+  rules at Parse *and* again at Bind, so `BEGIN; CREATE INDEX ASYNC ...;` over
+  the extended protocol was refused by the emulator's own one-DDL-per-transaction
+  rule. It is now admitted once, at Bind, like every other prepared statement,
+  and the statement carries its job id so a cached prepared statement executed
+  again still answers with one.
+- `internal/classify/eval.go`, `rules/dsql-2026.09.yaml` — the supported-type
+  list was enforced only on `CREATE TABLE`, so `ALTER TABLE ... ADD COLUMN c
+  money`, `text[]`, and `serial`, and `ALTER COLUMN ... TYPE xml`, all passed
+  through. Column extraction now covers `AT_AddColumn` and `AT_AlterColumnType`,
+  and the rules are duplicated onto `alter_table_stmt` through YAML anchors so
+  the two type lists cannot drift.
+- `internal/proxy/session.go` — OCC injection rules shared one commit counter,
+  so N rules matching a commit advanced it N times and a rule's `every: N`
+  fired early. Each rule now counts its own matches.
+- `internal/proxy/session.go` — `newJobID` returned 26 hex characters where a
+  derived id is a UUID. `sys.wait_for_job` casts to `uuid` first, so the
+  unnamed-index path answered with an id that failed as malformed (`22P02`)
+  rather than unknown. It is now a UUID.
+- `internal/proxy/session.go` — removed `inExtended`, `markExtended`, and
+  `getInExtended`: the field was written at every frontend message and never
+  read.
+
+Suite and documentation:
+
+- `internal/conformance/suite.go` — four probes added to the `alters` group for
+  the ALTER TABLE type rules above, each on its own column so one that
+  unexpectedly succeeds cannot change what the next observes. They are
+  **unrecorded**: the fix matches the CREATE TABLE behavior the record already
+  pins, but what a real cluster answers for the ALTER forms has not been
+  recorded. The conformance test reports them as uncovered until the next
+  baseline run.
+- `AGENTS.md`, `docs/PROGRESS.md` — the backing engine was described as
+  PostgreSQL 17 in three places; compose, the Dockerfile, and all three
+  testcontainers call sites use `postgres:16-alpine`.
+- `docs/PROGRESS.md` — **Current status** and **Next up** described a state
+  several sessions old (65 probes, `CREATE INDEX ASYNC` and `sys.jobs` as open
+  gaps, the suite as single-connection).
+- `.gitignore` — `.vscode/` was untracked and unignored, so it showed dirty in
+  every `git status`.
+
+Verification:
+
+```
+$ go build ./... && go vet ./... && go vet -tags integration ./... && gofmt -l .
+(no output)
+$ go test -race ./...
+ok  github.com/Dreamescaper/dsql-emulator/internal/classify     1.5s
+ok  github.com/Dreamescaper/dsql-emulator/internal/conformance  1.8s
+ok  github.com/Dreamescaper/dsql-emulator/internal/proxy        3.3s
+ok  github.com/Dreamescaper/dsql-emulator/internal/txn          2.1s
+ok  github.com/Dreamescaper/dsql-emulator/internal/wire         2.5s
+```
+
+Regression tests added: `TestSessionAllowsPreparedAsyncIndexInTransaction`,
+`TestSessionDropsJobWhenAsyncIndexFails`,
+`TestSessionCountsEachOccInjectionSeparately`, `TestNewJobIDIsAUUID`,
+`TestSaveDirRefusesToEmptyTheRecord`, and four rejection cases plus four
+acceptance cases in `TestClassifyRejectsUnsupportedStatements` /
+`TestClassifyAllowsSupportedStatements`. Each of the first three fails against
+the code as it was.
+
+Known gap: the four new conformance probes are unrecorded, so the ALTER TABLE
+type refusals are reasoned from the CREATE TABLE behavior rather than observed
+on a cluster.
 
 ### Released v0.1.1 and verified the published image (2026-09-15)
 
@@ -1025,7 +1279,7 @@ Delivered:
   Per-direction byte counters for observability.
 - `internal/proxy/proxy_test.go` — echo round-trip, a half-close regression test,
   and a context-cancel shutdown test.
-- `test/integration/proxy_test.go` — testcontainers PostgreSQL 17 + pgx through
+- `test/integration/proxy_test.go` — testcontainers PostgreSQL 16 + pgx through
   the proxy, covering simple query, extended protocol with parameters, DDL/DML,
   and an explicit transaction.
 - `docker-compose.yml`, `Makefile`, `.gitignore`.
@@ -1065,6 +1319,18 @@ with zero protocol assumptions.
 | 2026-09-15 | Ruleset lives in `rules/` as a package | `go:embed` cannot reach outside its package directory, so the loader and the YAML share `rules/` instead of splitting across `internal/rules` and `rules/`. |
 | 2026-09-15 | Parse errors are forwarded, not rejected | DSQL-only syntax such as `CREATE INDEX ASYNC` does not parse with stock libpg_query. Treating parse failure as incompatibility would wrongly reject valid DSQL. |
 | 2026-09-15 | Extended-protocol rejection drops messages until `Sync` | Mirrors PostgreSQL: after an error the server ignores messages until the next `Sync`, and this keeps the upstream connection in step with the client. |
+| 2026-09-16 | A failed baseline run saves nothing | A partial record would replace a complete one, and rebuilding it costs a metered cluster run. Refusing to save is recoverable; a truncated record is not. |
+| 2026-09-16 | `SaveDir` writes before it prunes | A failure part-way through a save leaves the fixtures it has not replaced, instead of an empty directory. |
+| 2026-09-16 | An async DDL is admitted at Bind, not Parse | Every other prepared statement is admitted when it runs, because clients cache statements and re-run them without a new Parse. Admitting at both points spent the transaction's single DDL twice. |
+| 2026-09-16 | ALTER TABLE type rules duplicated with YAML anchors | A type is unsupported wherever a column declares it, but `matches` keys a rule to one statement node. An anchor keeps the `create_stmt` and `alter_table_stmt` lists identical without a schema change to `Rule.Stmt`. |
+| 2026-09-16 | The ALTER TABLE type probes ship unrecorded | `make baseline` costs money and needs a fresh token, so the probes are added and reported as uncovered rather than recorded from a guess. |
+| 2026-09-16 | The primary-key guard reads object addresses, not statement text | `sql_drop` reports what a command actually dropped as integer object addresses, so quoting, `IF EXISTS`, `ONLY`, schema qualification and multi-action commands need no parsing. A snapshot at `ddl_command_start` supplies the keys, because they are gone by the time `sql_drop` fires. |
+| 2026-09-16 | ASYNC statements are parsed after the keyword is stripped | One narrow regex is unavoidable, because libpg_query rejects the keyword. Everything after it can be decided on a real parse tree, which is what the repository requires elsewhere and what lets the ruleset apply to these statements at all. |
+| 2026-09-16 | A schema-qualified index name is forwarded, not rejected in Go | PostgreSQL's grammar refuses it with the same `42601 syntax error at or near "."` the dialect reports, so hard-coding the message duplicated the backend for no gain. |
+| 2026-09-16 | The job id travels in a marker comment | It costs no extra round trip, survives into `current_query()` for both the simple and the extended protocol, works for a statement that names no object, and gives each build its own id as a real cluster does. |
+| 2026-09-16 | The emulator keeps issuing UUID job ids | The recording suggests DSQL uses 26-character base32, but nothing observed confirms what `wait_for_job` accepts. A UUID stays consistent with the cast that reproduces the verified `22P02`, and the question is recorded in the backlog instead. |
+| 2026-09-16 | `ALTER COLUMN ... TYPE` is refused as a statement form | The recorded refusal names no type, where the `ADD COLUMN` one does, and a supported target type returns the identical message. The rule is ordered ahead of the type rules so its wording, not theirs, answers a retype. |
+| 2026-09-16 | Setup drops dependents first, as cleanup does | A re-run meets the previous run's objects, including the foreign key a case adds, so the two orderings have to agree or the suite cannot start. |
 | 2026-09-15 | No per-connection prepared-statement tracking in M1 | Not needed while classification happened where SQL text arrives. Superseded in M7: cached statements arrive as Bind with no Parse, so a statement-name map is required after all. |
 | 2026-09-15 | TLS-negotiated connections fall back to raw relay | The emulator does not terminate TLS or hold the upstream key, so it cannot see inside a session the client encrypts end to end. |
 | 2026-09-15 | Pin the backend to REPEATABLE READ via a startup parameter | `SetStartupParameter` rewrites the startup message; an injected `SET` would require a synchronous round trip that deadlocks when the client authenticates with a password. |
@@ -1088,38 +1354,19 @@ with zero protocol assumptions.
 
 ## Next up
 
-Every milestone is done. What remains is depth on the two areas that are still
-thin, in the order I would take them.
+Multi-session conformance, the `sys.jobs` lifecycle, and re-recording the
+baseline are all done: the suite runs concurrent sessions with per-step timeouts
+and a record-only mode, an async index build records a job row that
+`wait_for_job` can find, and the record covers all 212 probes. What remains:
 
-### 1. Multi-session conformance, then OCC and FK conflicts
-
-The suite runs one connection, so DSQL's conflict output is unverified: the
-`40001`/`OC000` wording, whether the loser fails at the statement or at commit,
-and how `FOR KEY SHARE` and foreign keys adjudicate. Integration tests cover the
-emulator's behavior, but nothing pins it to the real cluster.
-
-- Extend the case model with concurrent sessions, per-step timeouts, and a
-  record-only mode, because a blocking PostgreSQL conflict cannot be replayed
-  safely against the emulator.
-- Probe a write-write conflict, `SELECT ... FOR UPDATE` versus a write, and the
-  foreign-key delete-referenced-row / insert-referencing-row pair.
-- Reconcile the emulator, and settle whether `SET DEFAULT` and `CASCADE`
-  conflict like `SET NULL`.
-
-### 2. `sys.jobs` lifecycle
-
-The surface exists but is empty: `CREATE INDEX ASYNC` returns a `job_id` and
-`sys.jobs` is a table nothing writes to, with `sys.wait_for_job` a stub. Record
-a job row per async index build and make `wait_for_job` meaningful.
-
-### 3. OCC adjudicator (mode 3)
+### 1. OCC adjudicator (mode 3)
 
 Conflicts are detected by PostgreSQL, which blocks before failing; DSQL is
 lock-free. A write-intent registry would approximate commit-time conflict
 without the block. Large, and worth doing only once the behavior above is
 pinned by a recording.
 
-### Smaller items
+### 2. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).

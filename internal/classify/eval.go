@@ -98,15 +98,44 @@ func relpersistence(node *pg_query.Node) string {
 	return ""
 }
 
-func columnTypes(node *pg_query.Node) []string {
-	cs := node.GetCreateStmt()
-	if cs == nil {
+// columnDefs returns the columns a statement declares: the ones a CREATE TABLE
+// defines, and the ones an ALTER TABLE adds or retypes. A type is unsupported
+// wherever it appears, so both forms are inspected.
+func columnDefs(node *pg_query.Node) []*pg_query.ColumnDef {
+	if cs := node.GetCreateStmt(); cs != nil {
+		var out []*pg_query.ColumnDef
+		for _, elt := range cs.GetTableElts() {
+			if col := elt.GetColumnDef(); col != nil {
+				out = append(out, col)
+			}
+		}
+		return out
+	}
+
+	stmt := node.GetAlterTableStmt()
+	if stmt == nil {
 		return nil
 	}
+	var out []*pg_query.ColumnDef
+	for _, cmd := range stmt.GetCmds() {
+		at := cmd.GetAlterTableCmd()
+		if at == nil {
+			continue
+		}
+		switch at.GetSubtype() {
+		case pg_query.AlterTableType_AT_AddColumn, pg_query.AlterTableType_AT_AlterColumnType:
+			if col := at.GetDef().GetColumnDef(); col != nil {
+				out = append(out, col)
+			}
+		}
+	}
+	return out
+}
+
+func columnTypes(node *pg_query.Node) []string {
 	var out []string
-	for _, elt := range cs.GetTableElts() {
-		col := elt.GetColumnDef()
-		if col == nil || col.GetTypeName() == nil {
+	for _, col := range columnDefs(node) {
+		if col.GetTypeName() == nil {
 			continue
 		}
 		names := col.GetTypeName().GetNames()
@@ -197,15 +226,10 @@ func renameType(node *pg_query.Node) string {
 	return ""
 }
 
-// hasArrayColumn reports whether any column in a CREATE TABLE is an array.
+// hasArrayColumn reports whether any column a statement declares is an array.
 func hasArrayColumn(node *pg_query.Node) bool {
-	cs := node.GetCreateStmt()
-	if cs == nil {
-		return false
-	}
-	for _, elt := range cs.GetTableElts() {
-		col := elt.GetColumnDef()
-		if col == nil || col.GetTypeName() == nil {
+	for _, col := range columnDefs(node) {
+		if col.GetTypeName() == nil {
 			continue
 		}
 		if len(col.GetTypeName().GetArrayBounds()) > 0 {
