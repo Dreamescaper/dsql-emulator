@@ -93,6 +93,11 @@ conn, err := pgx.Connect(ctx, dsn)
   committer without waiting. The outcome matches, the timing does not.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
+- **The `ASYNC` rewrite matches whole statements.** A multi-statement simple
+  query containing `CREATE INDEX ASYNC` — what `psql -c 'a; b'` sends — is not
+  rewritten, so PostgreSQL rejects it with a syntax error where DSQL reports its
+  own error (usually `0A000`, since it refuses more than one DDL per
+  transaction).
 - **The primary-key-column guard reads the statement text.** DSQL refuses to
   drop a primary-key column; the emulator enforces that in the backing database,
   which has the catalog to check against, but an event trigger there sees only

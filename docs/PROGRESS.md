@@ -34,6 +34,27 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Released v0.1.1 and verified the published image (2026-09-15)
+
+Pushed, cut `v0.1.1` with the release workflow, and checked the artifact rather
+than assuming it.
+
+- The release published `0.1.1` and `latest` for `linux/amd64` and
+  `linux/arm64`, and `latest` resolves to `0.1.1`. This also confirms the fix
+  for the tag-resolution bug: `v0.1.0` had published with only `latest`.
+- Pulled `0.1.1` and exercised the recent work through it: `version()` reports
+  `PostgreSQL 16`, a **partial index** returns a UUID `job_id` and appears in
+  `sys.jobs` as `INDEX_BUILD|completed`, dropping a **primary-key column** is
+  refused with `cannot drop primary key column id`, a non-key drop still works,
+  and a foreign key added without `NOT VALID` is refused with `0A000`.
+
+One gap surfaced while doing it: the `ASYNC` rewrite is anchored to a whole
+statement, so a multi-statement simple query containing `CREATE INDEX ASYNC` —
+what `psql -c 'a; b'` sends — is not rewritten and PostgreSQL answers with a
+syntax error where DSQL answers with its own error. Recorded in README and
+PLAN; not worth rewriting the anchored match for, since DSQL refuses more than
+one DDL per transaction in that form anyway.
+
 ### Guard against dropping a primary-key column (2026-09-15)
 
 Closed the more serious of the two `ALTER TABLE` divergences: DSQL refuses to

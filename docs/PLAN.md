@@ -178,7 +178,10 @@ same rules as the test suite with no extra setup.
 `CREATE INDEX ASYNC` is rewritten textually because libpg_query cannot parse the
 `ASYNC` keyword; everything after it, including a `WHERE` predicate, an
 `INCLUDE` list, or `NULLS NOT DISTINCT`, is forwarded untouched, and the
-qualified-name check happens before anything is sent.
+qualified-name check happens before anything is sent. The rewrite is anchored to
+a whole statement, so a multi-statement simple query that contains
+`CREATE INDEX ASYNC` is not rewritten; PostgreSQL then rejects it with a syntax
+error instead of DSQL's error.
 
 `sys.jobs` records an `INDEX_BUILD` job for every `CREATE INDEX ASYNC`, because
 an event trigger registered for `CREATE INDEX` fires for explicit index
