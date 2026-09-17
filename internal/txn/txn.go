@@ -92,14 +92,14 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 				return Violation{
 					Code:    CodeFeatureUnsupported,
 					Rule:    "ddl_count",
-					Message: "a transaction can include only one DDL statement",
+					Message: "multiple ddl statements not supported in a transaction",
 				}, true
 			}
 			if dml {
 				return Violation{
 					Code:    CodeFeatureUnsupported,
 					Rule:    "ddl_dml_mix",
-					Message: "DDL and DML operations must be in separate transactions",
+					Message: "ddl and dml are not supported in the same transaction",
 				}, true
 			}
 			ddl++
@@ -108,7 +108,7 @@ func (t *Tracker) Admit(kinds []classify.Kind, now time.Time) (Violation, bool) 
 				return Violation{
 					Code:    CodeFeatureUnsupported,
 					Rule:    "ddl_dml_mix",
-					Message: "DDL and DML operations must be in separate transactions",
+					Message: "ddl and dml are not supported in the same transaction",
 				}, true
 			}
 			dml = true

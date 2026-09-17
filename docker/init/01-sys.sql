@@ -25,8 +25,14 @@ DECLARE
     job_status text;
 BEGIN
     -- Aurora DSQL converts the id to a UUID, so an id that is not one fails
-    -- with 22P02 rather than being reported as unknown.
-    PERFORM p_job_id::uuid;
+    -- with 22P02 rather than being reported as unknown. The cast is wrapped so
+    -- the refusal carries DSQL's wording rather than PostgreSQL's, which names
+    -- the offending value.
+    BEGIN
+        PERFORM p_job_id::uuid;
+    EXCEPTION WHEN invalid_text_representation THEN
+        RAISE EXCEPTION 'Unable to convert text to UUID' USING ERRCODE = '22P02';
+    END;
     SELECT status INTO job_status FROM sys.jobs WHERE sys.jobs.job_id = p_job_id;
     IF job_status IS NULL THEN
         RAISE EXCEPTION 'unknown job %', p_job_id USING ERRCODE = '22023';

@@ -431,8 +431,9 @@ first: a `BEGIN; CREATE INDEX ASYNC ...; COMMIT` has to show the `job_id` on the
 index build's own result rather than on the `BEGIN`.
 
 The comparison enforces outcome, SQLSTATE, command tag, and rows, and for a
-multi-statement step each of those per statement. Error
-*messages* are reported but advisory, because server wording drifts. A case may
+multi-statement step each of those per statement. Error *messages* are reported
+but advisory, because server wording drifts; every recorded message matches
+nonetheless, so a message note in a run is a change worth reading. A case may
 set `IgnoreRows` (generated ids, `version()`) or `KnownGap` (an accepted
 divergence); known gaps are reported and not enforced. Cases the emulator runs
 that the record does not cover are listed as unrecorded, so a probe added since

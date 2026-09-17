@@ -113,8 +113,6 @@ conn, err := pgx.Connect(ctx, dsn)
   `current_setting('server_version_num')`, and `SHOW server_version_num` are
   rewritten to DSQL's values. The rewrites match whole statements, so a version
   read another way reports the backing engine.
-- **Rejection wording is approximate.** The SQLSTATE is the contract;
-  messages mirror DSQL's meaning and drift.
 - **No control plane.** Cluster creation, IAM and tagging are out of scope;
   [LocalStack](https://docs.localstack.cloud/aws/services/dsql/) covers those.
 - The backing database needs the scripts in `docker/init/` (the `sys` schema and

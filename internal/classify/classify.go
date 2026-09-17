@@ -127,7 +127,7 @@ func (c *Classifier) Classify(sql string, opts ...Option) (Result, error) {
 				continue
 			}
 			if matches(rule, node) {
-				return Result{Verdict: Verdict{RuleID: rule.ID, Code: rule.Code, Message: rule.Message}}, nil
+				return Result{Verdict: Verdict{RuleID: rule.ID, Code: rule.Code, Message: fill(rule, node)}}, nil
 			}
 		}
 

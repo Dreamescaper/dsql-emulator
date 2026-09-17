@@ -255,3 +255,55 @@ func TestClassifyAllowsRepeatableReadIsolation(t *testing.T) {
 		}
 	}
 }
+
+// Aurora DSQL names the type it refused, spelled as PostgreSQL displays it
+// rather than as the statement wrote it.
+func TestClassifyNamesTheRefusedType(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want string
+	}{
+		{"CREATE TABLE t (v money)", "datatype money not supported"},
+		{"CREATE TABLE t (v xml)", "datatype xml not supported"},
+		{"CREATE TABLE t (v bit(8))", "datatype bit not supported"},
+		// varbit and int4 are names the parser uses internally; DSQL reports
+		// the ones PostgreSQL displays.
+		{"CREATE TABLE t (v varbit(8))", "datatype bit varying not supported"},
+		{"CREATE TABLE t (v int[])", "datatype integer[] not supported"},
+		{"CREATE TABLE t (v text[])", "datatype text[] not supported"},
+		{"CREATE TABLE t (v int4range)", "datatype int4range not supported"},
+		{"ALTER TABLE t ADD COLUMN v money", "datatype money not supported"},
+		{"ALTER TABLE t ADD COLUMN v text[]", "datatype text[] not supported"},
+		// A geometric type is refused through the function that builds one.
+		{"SELECT line('{1,2,3}')", "datatype line not supported"},
+		{"SELECT circle('<(0,0),1>'::text)", "datatype circle not supported"},
+	}
+
+	c := newClassifier(t)
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			result, err := c.Classify(tt.sql)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if !result.Verdict.Rejected() {
+				t.Fatalf("%q was not refused", tt.sql)
+			}
+			if result.Verdict.Message != tt.want {
+				t.Fatalf("got %q want %q", result.Verdict.Message, tt.want)
+			}
+		})
+	}
+}
+
+// A refusal that names the language behaves the same way.
+func TestClassifyNamesTheRefusedLanguage(t *testing.T) {
+	c := newClassifier(t)
+	result, err := c.Classify("CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$")
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if want := "CREATE FUNCTION with language plpgsql not supported"; result.Verdict.Message != want {
+		t.Fatalf("got %q want %q", result.Verdict.Message, want)
+	}
+}

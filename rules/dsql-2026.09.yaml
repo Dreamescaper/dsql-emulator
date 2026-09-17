@@ -56,7 +56,7 @@ unsupported:
     identity_cache_min: 65536
     cache_allow: [1]
     code: "0A000"
-    message: "identity column is not supported without an explicit cache size; define CACHE greater than or equal to 65536 or equal to 1"
+    message: "identity column is not supported without an explicit cache size. please define CACHE greater than or equal to 65536 or equal to 1"
 
   # Data types are an allow-list in the documentation: anything absent from the
   # supported-types page is unsupported. This deny-list covers the tested set.
@@ -68,7 +68,7 @@ unsupported:
        "int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange",
        "bit", "varbit", "pg_lsn"]
     code: "0A000"
-    message: "datatype not supported"
+    message: "datatype {type} not supported"
 
   # Recorded on 2026-09-16: DSQL refuses the ALTER COLUMN ... TYPE form itself,
   # whatever the target type. Its message names no type, where the ADD COLUMN
@@ -85,32 +85,34 @@ unsupported:
     stmt: alter_table_stmt
     column_type: *unsupported_types
     code: "0A000"
-    message: "datatype not supported"
+    message: "datatype {type} not supported"
 
+  # An array is just another unsupported datatype to DSQL, named as PostgreSQL
+  # displays it: an int[] column is refused as "datatype integer[] not supported".
   - id: array_column
     stmt: create_stmt
     column_array: true
     code: "0A000"
-    message: "array columns are not supported"
+    message: "datatype {type} not supported"
 
   - id: array_column_alter_column
     stmt: alter_table_stmt
     column_array: true
     code: "0A000"
-    message: "array columns are not supported"
+    message: "datatype {type} not supported"
 
   # No user-defined types exist, so every statement that would touch one is
   # refused: CREATE TYPE, ALTER TYPE, and DROP TYPE.
   - id: alter_enum
     stmt: alter_enum_stmt
     code: "0A000"
-    message: "ALTER TYPE is not supported"
+    message: "ALTER TYPE not supported"
 
   - id: rename_type
     stmt: rename_stmt
     rename_type: ["OBJECT_TYPE"]
     code: "0A000"
-    message: "ALTER TYPE is not supported"
+    message: "unsupported object in RENAME statement"
 
   - id: drop_type
     stmt: drop_stmt
@@ -133,7 +135,7 @@ unsupported:
     stmt: select_stmt
     function: ["line", "circle", "polygon", "box", "path", "lseg", "center", "radius"]
     code: "0A000"
-    message: "datatype not supported"
+    message: "datatype {type} not supported"
 
   # DSQL detects conflicts at commit for FOR UPDATE and FOR KEY SHARE, but does
   # not offer FOR SHARE or FOR NO KEY UPDATE.
@@ -141,7 +143,7 @@ unsupported:
     stmt: select_stmt
     locking: ["LCS_FORSHARE", "LCS_FORNOKEYUPDATE"]
     code: "0A000"
-    message: "locking clause not supported"
+    message: "locking clauses other than FOR UPDATE/FOR KEY SHARE are not supported"
 
   - id: materialized_view
     stmt: create_table_as_stmt
@@ -175,7 +177,7 @@ unsupported:
     sequence_cache_min: 65536
     cache_allow: [1]
     code: "0A000"
-    message: "CREATE SEQUENCE is not supported without an explicit cache size; define CACHE greater than or equal to 65536 or equal to 1"
+    message: "CREATE SEQUENCE is not supported without an explicit cache size. please define CACHE greater than or equal to 65536 or equal to 1"
 
   - id: tablespace
     stmt: create_table_space_stmt
@@ -285,7 +287,7 @@ unsupported:
     stmt: create_function_stmt
     language_not: ["sql"]
     code: "0A000"
-    message: "only LANGUAGE sql functions are supported"
+    message: "CREATE FUNCTION with language {language} not supported"
 
 isolation:
   supported: ["repeatable read"]

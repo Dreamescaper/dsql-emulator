@@ -6,7 +6,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, and the record is fresh.** The OCC adjudicator
+**Every milestone is done, and the record is fresh.** Every refusal the record
+holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
 rather than by a PostgreSQL syntax error. The baseline was
@@ -48,6 +49,63 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Refusal messages mirror Aurora DSQL's wording (2026-09-17)
+
+Messages were advisory in the comparison and had been left to drift, on the
+grounds that the SQLSTATE is the contract. The fresh record showed 39 of them
+saying something other than what the cluster says. All 39 now match; the
+comparison still treats messages as advisory, but nothing in the record differs,
+so a message note in a future run is a real change rather than background noise.
+
+Most of the gap was one missing capability: **DSQL names the thing it refused**,
+and the ruleset could only state a fixed sentence. A rule's message may now carry
+`{type}` or `{language}`, filled from the statement that was refused. The type is
+spelled the way PostgreSQL displays it rather than the way the statement wrote
+it, which is what the record shows: `varbit(8)` is refused as
+`datatype bit varying not supported` and `int[]` as `datatype integer[] not
+supported`. Only the aliases the parser always rewrites are mapped; a type
+written as its displayed name needs no entry.
+
+That also resolved an inconsistency the emulator had invented. An array column
+was refused as `array columns are not supported`, but DSQL treats an array as
+just another unsupported datatype and names it, so the two array rules now carry
+the same message as every other type rule.
+
+The rest were plain wording, in the ruleset and in `txn.go`:
+
+| what | Aurora DSQL |
+|------|-------------|
+| two DDL in a transaction | `multiple ddl statements not supported in a transaction` |
+| DDL with DML | `ddl and dml are not supported in the same transaction` |
+| `FOR SHARE` / `FOR NO KEY UPDATE` | `locking clauses other than FOR UPDATE/FOR KEY SHARE are not supported` |
+| `ALTER TYPE ... ADD VALUE` | `ALTER TYPE not supported` |
+| `ALTER TYPE ... RENAME` | `unsupported object in RENAME statement` |
+| sequence and identity cache | `... cache size. please define CACHE ...` |
+| a non-SQL function language | `CREATE FUNCTION with language plpgsql not supported` |
+
+One came from the backing database rather than the ruleset: `sys.wait_for_job`
+cast its argument to `uuid` and let PostgreSQL's message through, which names the
+offending value. The cast is now wrapped so the refusal carries DSQL's
+`Unable to convert text to UUID` with the same SQLSTATE.
+
+Files: `internal/classify/message.go` (new), `internal/classify/classify.go`,
+`internal/classify/classify_test.go`, `internal/txn/txn.go`,
+`rules/dsql-2026.09.yaml`, `docker/init/01-sys.sql`, `README.md`, `docs/PLAN.md`.
+
+**Verification.** A conformance run reported 39 message notes before and none
+after, with `218 cases match the golden record` throughout. The golden record was
+not touched: this changes what the emulator says, not what was recorded.
+
+```
+$ make build && make vet && make test && make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	4.050s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.187s
+```
+
+**Note for anyone running an old container.** The `sys.wait_for_job` change is
+in an init script, so it applies to a database created after it. An existing one
+keeps PostgreSQL's wording until it is recreated.
 
 ### Recorded the multi-statement probes; every inference held (2026-09-17)
 
@@ -1804,6 +1862,9 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Fill `{type}` and `{language}` from the refused statement | DSQL names what it refused, and a fixed sentence per rule cannot. The alternative was a rule per type, which would have meant twenty-odd near-identical rules and no way to name an array's element type at all. |
+| 2026-09-17 | Render types as PostgreSQL displays them, not as written | The record shows `varbit(8)` refused as `bit varying` and `int[]` as `integer[]`, so DSQL reports the displayed name. Only the parser's internal aliases are mapped; anything else passes through, so a type this has no evidence for is reported as the user wrote it rather than guessed at. |
+| 2026-09-17 | Messages stay advisory in the comparison | Matching today does not make wording a contract. Keeping them advisory means a future drift is reported rather than failing a run, which is the same bargain as before -- only now the baseline is zero notes. |
 | 2026-09-17 | Kept the multi-statement probes' recorded messages as advisory, like every other message | DSQL words the two refusals differently from the emulator (`multiple ddl statements not supported in a transaction` against `a transaction can include only one DDL statement`). The SQLSTATE is the contract, and matching wording across systems is not a goal. |
 | 2026-09-17 | Record one `Result` per statement rather than one `Observation` per statement | Keeps the step-to-observation mapping the comparison and the diff messages rely on, and keeps a multi-statement step legible as one thing in the record. |
 | 2026-09-17 | Added the probes before recording them | The harness change is what needed reviewing and testing; the answers cost a metered run. An unrecorded probe is reported, not silently passed, so the gap stays visible until it is filled. |
