@@ -89,11 +89,21 @@ type Limits struct {
 
 // OCC describes conflict behavior.
 type OCC struct {
+	// Sources and KeyColumnsOnlyFor record which overlaps Aurora DSQL treats as
+	// a conflict. Nothing reads them: the emulator delegates the decision to
+	// the backend's lock manager, whose row-lock modes already draw the same
+	// lines, down to a non-key update not conflicting with a referencing
+	// insert. They are kept as the statement of what is being emulated.
 	Sources           []string       `yaml:"sources"`
 	KeyColumnsOnlyFor []string       `yaml:"key_columns_only_for"`
 	Error             string         `yaml:"error"`
 	SQLState          string         `yaml:"sqlstate"`
 	Inject            []OCCInjection `yaml:"inject"`
+	// LockTimeoutMS bounds how long the backend waits for a row lock. Aurora
+	// DSQL never waits, so a wait that runs out is the evidence that two
+	// transactions want the same rows, which the emulator resolves at COMMIT.
+	// Zero leaves the backend waiting, which blocks where DSQL would not.
+	LockTimeoutMS int `yaml:"lock_timeout_ms"`
 }
 
 // OCCInjection fails a transaction at COMMIT when it has touched one of the

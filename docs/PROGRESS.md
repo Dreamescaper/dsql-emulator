@@ -6,16 +6,23 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone done except M5, which still lacks the OCC adjudicator.** The
-golden record was re-recorded on 2026-09-16 and holds all 212 probes the suite
+**Every milestone is done, and the record is fresh.** The baseline was
+re-recorded against the cluster on 2026-09-17 and the emulator matches all 212
+cases against it, the adjudicator included. A baseline run now rewrites only the
+fixtures whose answers changed — measured by what the record enforces, so a
+generated job id or a flipped race does not count — and that run touched one
+fixture. M5 closed with the OCC adjudicator: conflicts are
+resolved at `COMMIT` without waiting for locks, across write-write,
+`FOR UPDATE`, `FOR KEY SHARE` and foreign-key overlap. The four conflicting
+conformance probes are no longer record-only — they are replayed against the
+emulator and enforced. The golden record still holds all 212 probes the suite
 defines; the emulator matches every one except the accepted
 `alter_unique_using_index` gap, and nothing is unrecorded. Refusals inside a
 transaction fail it exactly as Aurora DSQL does, `CREATE INDEX ASYNC` and
-`sys.jobs` are implemented, and the conformance suite covers concurrent
-sessions. Three mechanisms that read SQL as text now read structure instead,
-which closed the limitations that came with them.
+`sys.jobs` are implemented. Three mechanisms that read SQL as text now read
+structure instead, which closed the limitations that came with them.
 
-Last updated: 2026-09-16.
+Last updated: 2026-09-17.
 
 ## How to run
 
@@ -38,6 +45,255 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### The README describes the product, not the diff (2026-09-17)
+
+The OCC work left the README explaining that a conflicting write "no longer
+waits" and that some conflicts are "still reported at the statement". Both are
+written from the point of view of someone who knows what the emulator did last
+week. A reader has no such point of view: a sentence phrased as a delta
+describes something they cannot see, and it ages into a lie the moment the thing
+it contrasts with is forgotten.
+
+Both were rewritten to state the behavior plainly, and a third "still" in the
+`server_version` bullet was dropped as ambiguous. The README now contains no
+change-relative wording.
+
+`AGENTS.md` gains a `README.md` section alongside the `PLAN.md` and
+`PROGRESS.md` ones, so this does not have to be caught by review again. It
+carries the distinction that makes the rule usable: contrasting with Aurora DSQL
+or PostgreSQL is the README's whole job, while contrasting with a previous
+version of the emulator is what to avoid.
+
+Files: `README.md`, `AGENTS.md`.
+
+**Verification.** `grep -nE "no longer|previously|used to|\\bstill\\b|\\bnow\\b" README.md`
+returns nothing. `make build`, `make vet` and `make test` pass unchanged; no code
+was touched.
+
+### Re-recorded against the cluster; the adjudicator is confirmed (2026-09-17)
+
+Ran `dsql-baseline` against the cluster in `eu-central-1` with a fresh token,
+through `--token-file` so the token never reached a process list. All 212 cases
+recorded, 38 objects dropped, no cleanup skips. **The emulator matches all 212
+against the new record**, which closes the gap the adjudicator work was left
+with: its row counts and commit-time failures were previously checked against a
+record made when it could not produce them.
+
+The cluster confirmed the adjudicator's shape directly. Every conflicting probe
+came back with both statements succeeding and one transaction failing at
+`COMMIT`, and `occ_fk_delete_insert` picked the *other* session as its loser
+than the 2026-09-16 run did — which is the race `ConflictRace` exists to
+tolerate, demonstrated rather than argued.
+
+**The new save process did its job, and showed where it did not go far enough.**
+Of thirteen fixtures, three were written:
+
+| fixture | why |
+|---------|-----|
+| `occ_conflict` | real: the `record_only` → `conflict_race` / `ignore_rows` metadata change |
+| `alters` | noise: two generated `sys.jobs` ids |
+| `index` | noise: five generated `sys.jobs` ids |
+
+Both noise fixtures hold cases already marked `IgnoreRows` — the record does not
+enforce those values and the emulator is never held to them, yet they would have
+rewritten two fixtures on every run forever. So change detection now waives
+exactly what the comparison waives: rows and row-count tags of an `IgnoreRows`
+case, and which session lost a `ConflictRace` (the finals are pooled and sorted,
+so *how many* lost is still enforced, and every earlier step stays positional).
+
+With that rule the run touches one fixture. `alters.json` and `index.json` were
+restored to what they were, which is what the fixed recorder would have left.
+
+Files: `internal/conformance/record.go`,
+`internal/conformance/conformance_test.go`,
+`test/conformance/golden/occ_conflict.json`, `docs/PLAN.md`.
+
+**Verification.**
+
+```
+$ go run ./cmd/dsql-baseline --host <cluster>.dsql.eu-central-1.on.aws \
+      --token-file dsql.token --out-dir test/conformance/golden
+recorded occ_write_write        session 0: BEGIN | UPDATE 1 | COMMIT || session 1: BEGIN | UPDATE 1 | error 40001
+recorded occ_fk_delete_insert   session 0: BEGIN | DELETE 1 | error 40001 || session 1: BEGIN | INSERT 0 1 | COMMIT
+cleanup: dropping 38 objects
+
+Recorded 212 cases against aurora-dsql
+Changed 3 fixture(s) in test/conformance/golden: alters, index, occ_conflict
+
+$ make conformance
+    conformance_test.go:114: 212 cases match the golden record
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	21.211s
+
+$ make build && make vet && make test && make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	3.758s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	5.805s
+```
+
+The new rule was checked against the run's own output before the two fixtures
+were restored: saving each freshly recorded file over the committed one reports
+`alters changed=false`, `index changed=false`, `occ_conflict changed=true`.
+
+**Still open.** Ten fixtures now carry 2026-09-16 and three carry 2026-09-17, so
+`recorded_at` is per-group rather than per-run. Nothing reads it, and `LoadDir`
+takes the first file's for the merged record, which is now arbitrary; if the
+date of the last full run matters, it belongs here rather than in the fixtures.
+
+### A recording that finds nothing changed now writes nothing (2026-09-17)
+
+`make baseline` rewrote every fixture on every run, so the only difference a
+re-recording usually produced was thirteen new timestamps. That is the opposite
+of what the record is for: its git history should be the list of runs that found
+the cluster answering differently.
+
+`Save` now compares the record it is about to write with the one on disk, with
+`recorded_at` cleared on both, and skips the write entirely when they match. The
+comparison renders both sides through the same marshaller rather than comparing
+field by field, so a field added to the record later is covered without an
+equality function to keep in step with the struct. `Save` returns whether it
+wrote, `SaveDir` returns the groups that changed (a pruned fixture counts), and
+`dsql-baseline` reports the run either way — including `Nothing changed`, which
+is a result worth seeing after paying for a run.
+
+That a run happened at all is no longer in the fixtures. It belongs here, in the
+log, which is where runs are recorded.
+
+Files: `internal/conformance/record.go`, `internal/conformance/conformance_test.go`,
+`cmd/dsql-baseline/main.go`, `test/conformance/golden_test.go`, `docs/PLAN.md`,
+`AGENTS.md`, `README.md`.
+
+**Verification.** The property is held to the committed record itself, with no
+cluster and no Docker, so it is checked on every `make test`:
+`TestRerecordingAnUnchangedClusterWritesNothing` puts the recorded observations
+back into the order a run produces them in, saves them with a timestamp a day
+later, and requires every fixture to come out byte-identical.
+
+Writing that test found something worth keeping: `LoadDir` sorts cases by name
+so two records can be compared, while a run appends in suite order, so a plain
+load-and-save round trip is not a fixed point and would have tested the wrong
+thing. The test reconstructs suite order, which also pins the record to the
+order its probes ran in — what makes a case that reads what an earlier one wrote
+readable at all.
+
+```
+$ make build && make vet && make test
+ok  	github.com/Dreamescaper/dsql-emulator/internal/conformance	0.205s
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	0.184s
+...
+
+$ make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	21.233s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	22.999s
+```
+
+`git status test/conformance/golden/` is clean throughout: the tests save into a
+copy, so a failure cannot disturb the record.
+
+**Known gap.** Nothing was re-recorded yet, so the change is verified against
+the existing record rather than against a run. (Closed the same day; see the
+entry above, which is also where the rule turned out to need widening.)
+
+### The OCC adjudicator: conflicts at COMMIT, without the block (2026-09-17)
+
+Mode 3 is built, and not the way the plan proposed. No write-intent registry
+was written, because PostgreSQL already keeps one: its lock manager. What the
+emulator adds is a bound on the wait and a different place to report it.
+
+**Two candidate designs were measured before either was built**, against a
+throwaway PostgreSQL 16:
+
+| Question | Result |
+|----------|--------|
+| Baseline: two `REPEATABLE READ` sessions, same row | the loser blocked **2984ms**, then failed at its `UPDATE` |
+| A `BEFORE ROW` trigger taking `pg_try_advisory_xact_lock` | **ruled out** — the trigger never fired and the loser still blocked 2963ms. `GetTupleForTrigger` locks the tuple before a `BEFORE ROW` trigger runs, so a database-side registry cannot see the conflict it exists to prevent |
+| `lock_timeout` + a savepoint | **works** — the refused statement returned in 50ms as `55P03`, `ROLLBACK TO SAVEPOINT` left the transaction usable with its snapshot intact, and it committed |
+| All four DSQL conflict shapes under a bounded wait | detected in 51–56ms; the must-not-conflict control (non-key update against a referencing insert) committed in 0.6ms |
+
+**What was built.** `internal/occ/` decides which statements a refusal can be
+reported for and builds the read-only **shadow** that reports what the refused
+one would have: an `UPDATE`/`DELETE` becomes `SELECT count(*)` over the same
+relation and predicate, deparsed from the statement's own parse tree; an
+`INSERT ... VALUES` states its own count; a locking `SELECT` is re-run without
+its locking clause. `internal/proxy/adjudicator.go` runs the hidden exchanges:
+a savepoint established once per transaction behind the client's own
+`ReadyForQuery`, then, on `55P03` or a statement-time `40001`, a rollback to it
+followed by the shadow, after which the client is answered as if its statement
+had run. The transaction is marked doomed and fails at `COMMIT`.
+
+Files: `internal/occ/occ.go`, `internal/occ/occ_test.go`,
+`internal/proxy/adjudicator.go`, `internal/proxy/adjudicator_test.go`,
+`internal/proxy/session.go`, `internal/proxy/session_test.go`,
+`internal/conformance/compare.go`, `internal/conformance/suite.go`,
+`test/integration/occ_test.go`, `rules/rules.go`,
+`rules/dsql-2026.09.yaml`, `docs/PLAN.md`, `README.md`.
+
+**The four conflict probes are now enforced.** They were `RecordOnly` because a
+replay would hang. They now carry `ConflictRace` instead: which transaction
+loses is a race on both sides, so the replay has to reproduce that one lost,
+with the same SQLSTATE, at the step the conflict surfaces at — not which one.
+`CompareSuites` now takes the replay policy from the suite rather than from the
+record, so this took effect without re-recording; the recorded observations were
+not touched. The two probes that read a row also ignore its value, because what
+a previous case leaves there depends on which of its sessions won.
+
+**Verification.**
+
+```
+$ make build && make vet && make test
+ok  	github.com/Dreamescaper/dsql-emulator/internal/classify
+ok  	github.com/Dreamescaper/dsql-emulator/internal/conformance
+ok  	github.com/Dreamescaper/dsql-emulator/internal/occ
+ok  	github.com/Dreamescaper/dsql-emulator/internal/proxy
+ok  	github.com/Dreamescaper/dsql-emulator/internal/txn
+ok  	github.com/Dreamescaper/dsql-emulator/internal/wire
+
+$ make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	3.728s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	5.773s
+
+$ go test -race -count=1 ./internal/... && go test -race -tags integration -count=1 ./test/...
+ok  	github.com/Dreamescaper/dsql-emulator/internal/proxy	2.120s
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.275s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	7.467s
+```
+
+The adjudicator adds a second goroutine's worth of state to the session, so the
+suite was run under `-race` as well. It found one real problem, in the test
+helper rather than the emulator: the goroutine that answers a rowset shadow
+shares the backend encoder with the test that started it, so the wait is now
+taken explicitly at the point it is safe.
+
+The conformance run reports `212 cases match the golden record`, and the four
+conflict probes now replay with DSQL's shape, for example:
+
+```
+recorded occ_write_write     session 0: BEGIN | UPDATE 1 | COMMIT || session 1: BEGIN | UPDATE 1 | error 40001
+recorded occ_fk_delete_insert session 0: BEGIN | DELETE 1 | COMMIT || session 1: BEGIN | INSERT 0 1 | error 40001
+```
+
+`TestOccAdjudicatesConflictsAtCommit` covers all five conflict shapes against a
+real backend and fails any statement that takes longer than 3s, so a regression
+back to blocking is caught rather than merely slow.
+
+**Deliberate limitations.**
+
+- **First writer wins, not first committer.** DSQL fails whichever transaction
+  it adjudicates second; the emulator fails whichever asked for the rows
+  second. They coincide when a transaction commits in the order it wrote.
+- **A doomed transaction does not read its own writes**; they were rolled back
+  to the savepoint. It cannot commit, so nothing it reads can be acted on.
+- **Parameterised statements are not taken over.** A shadow is a different
+  statement, so the client's bound values cannot be carried to it. The same
+  applies to `RETURNING`, `INSERT ... SELECT`, `ON CONFLICT`, and
+  multi-statement simple queries. These report the conflict where PostgreSQL
+  raised it, with DSQL's wording and SQLSTATE. Closing the parameterised case
+  means capturing parameter types from the backend's `ParameterDescription`.
+- **`lock_timeout` is session-wide**, so a DDL that cannot take its lock in
+  time is reported as a conflict too.
+- `occ.sources` and `occ.key_columns_only_for` are still read by nothing, but
+  they are no longer aspirational: the backend's row-lock modes draw the same
+  lines, down to a non-key update not conflicting with a referencing insert.
+  They are now commented as the statement of what is being emulated.
 
 ### Re-recorded the baseline; ALTER COLUMN TYPE was wrong (2026-09-16)
 
@@ -1310,6 +1566,20 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | The README states current behavior only; history lives in this log | A delta is only legible to someone who knows the previous state, which no reader of a README has. Written into `AGENTS.md` so it is a rule rather than a review comment. |
+| 2026-09-17 | Change detection waives what the comparison waives | The first real re-recording rewrote two fixtures for nothing but generated job ids. A record that is not enforced on a value should not be rewritten for it either. |
+| 2026-09-17 | Restored the two fixtures the fixed rule would not have written | The run found nothing in them; leaving the rewrite in would have put exactly the diff this work exists to remove into the record's history. |
+| 2026-09-17 | An unchanged fixture is not rewritten, timestamp included | The record's git history should show the runs that found a difference. A timestamp-only diff on thirteen files hides them. |
+| 2026-09-17 | Compare by marshalling both sides with the timestamp cleared | An equality function over the record would have to be updated whenever a field is added, and would fail silently when it was not. |
+| 2026-09-17 | Skip the write rather than carry the old timestamp forward | Same bytes either way, but an untouched file keeps its mtime, so "nothing changed" is visible without git. |
+| 2026-09-17 | The unchanged-record test reconstructs suite order | `LoadDir` sorts by name and a run appends in suite order, so a load-and-save round trip is not a fixed point; testing it would have asserted the wrong property. |
+| 2026-09-17 | Adjudicate with the backend's lock manager, not a write-intent registry | PostgreSQL's row locks already are the write-intent graph, key-column-aware down to `KEY SHARE` versus `NO KEY EXCLUSIVE`. A registry would have had to re-derive what the backend already knows, and parse key predicates to do it. |
+| 2026-09-17 | Rejected the `BEFORE ROW` trigger registry | Measured: `GetTupleForTrigger` locks the tuple before the trigger fires, so the trigger never runs on the conflicting path. The design looked cheapest and does not work. |
+| 2026-09-17 | `lock_timeout` 50ms, session-wide, from the ruleset | Turns an unbounded wait into evidence of a conflict. Session-wide costs a DDL lock wait being reported as a conflict, which errs toward DSQL's lock-free model rather than PostgreSQL's. |
+| 2026-09-17 | One savepoint per transaction, not per statement | A transaction that rolls back to it is doomed, so the work it loses is discarded at `COMMIT` anyway; one subtransaction keeps the backend's stack shallow. The cost is that a doomed transaction does not read its own writes. |
+| 2026-09-17 | Answer a refused statement with a shadow rather than a guessed row count | The command tag is what the conformance probes compare, and fabricating it would make the record meaningless. A statement with no exact shadow is not taken over at all. |
+| 2026-09-17 | `ConflictRace` rather than permuting session assignments | Permutation was tried first and is wrong: the sessions in a case run different statements, so swapping them compares a `FOR UPDATE` against an `UPDATE`. What varies is which transaction loses, not which statements it ran. |
+| 2026-09-17 | `CompareSuites` takes the replay policy from the suite, not the record | Lets a case stop being record-only without re-recording, which costs money and a cluster. The recorded observations stay untouched. |
 | 2026-09-15 | Build in Go | `jackc/pgproto3` is purpose-built for transparent PG proxies; `pg_query_go` binds real libpg_query. Installed Go 1.27.1 via Homebrew. |
 | 2026-09-15 | Module path `github.com/Dreamescaper/dsql-emulator` | Matches the published GitHub repo. |
 | 2026-09-15 | Repo `Dreamescaper/dsql-emulator` is public | Matches the prior-art projects' approach. |
@@ -1354,21 +1624,22 @@ with zero protocol assumptions.
 
 ## Next up
 
-Multi-session conformance, the `sys.jobs` lifecycle, and re-recording the
-baseline are all done: the suite runs concurrent sessions with per-step timeouts
-and a record-only mode, an async index build records a job row that
-`wait_for_job` can find, and the record covers all 212 probes. What remains:
+Every milestone is done, the adjudicator included. What remains:
 
-### 1. OCC adjudicator (mode 3)
+### 1. Parameterised statements in the adjudicator
 
-Conflicts are detected by PostgreSQL, which blocks before failing; DSQL is
-lock-free. A write-intent registry would approximate commit-time conflict
-without the block. Large, and worth doing only once the behavior above is
-pinned by a recording.
+A conflict on `UPDATE t SET v = $1 WHERE id = $2` is still reported at the
+statement, because the shadow that would answer it cannot carry the client's
+bound values. Capturing parameter type OIDs from the backend's
+`ParameterDescription` would let a shadow declare them and be bound with the
+client's own values, since deparsing preserves the parameter numbering. This is
+the common shape in application code, so it is the most valuable thing left.
 
 ### 2. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).
+- `occ.inject` rules get no validation: an empty or duplicate `id`, or a
+  negative `every`, loads silently where an `unsupported` rule would not.
 - One conformance run took ~18s instead of ~1s and never reproduced; worth a
   glance if it returns.

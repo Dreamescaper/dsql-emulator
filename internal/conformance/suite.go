@@ -33,9 +33,12 @@ type Case struct {
 	// concurrently, each step list in order, with a fixed delay between steps.
 	Sessions [][]string `json:"sessions,omitempty"`
 	// RecordOnly cases are recorded against a real cluster but never replayed
-	// against the emulator, because it cannot reproduce them: PostgreSQL blocks
-	// on a conflicting write where DSQL is lock-free.
+	// against the emulator, because it cannot reproduce them.
 	RecordOnly bool `json:"record_only,omitempty"`
+	// ConflictRace marks a case whose loser is decided by a race. The record
+	// pins which transaction lost; the replay only has to lose as many, with
+	// the same SQLSTATE, at the step the conflict surfaces at.
+	ConflictRace bool `json:"conflict_race,omitempty"`
 }
 
 func one(sql string) []string { return []string{sql} }
@@ -450,30 +453,32 @@ func queryCases() []Case {
 	}
 }
 
-// occConflictCases cover concurrency. The conflicting ones are record-only:
-// DSQL adjudicates at commit and is lock-free, while PostgreSQL blocks before
-// failing, so the emulator cannot reproduce them and a replay would hang.
+// occConflictCases cover concurrency. The conflicting ones are marked
+// ConflictRace: both systems pick their loser by a race, so the replay has to
+// reproduce that one transaction lost, not which one. The two that read a row
+// ignore its value, because what a previous case left there depends on which of
+// its sessions won.
 func occConflictCases() []Case {
 	return []Case{
-		{Name: "occ_write_write", Group: "occ_conflict", RecordOnly: true,
+		{Name: "occ_write_write", Group: "occ_conflict", ConflictRace: true,
 			Note: "two writers to one row: the loser fails at commit",
 			Sessions: [][]string{
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'ww-a' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'ww-b' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
 			}},
-		{Name: "occ_for_update_vs_write", Group: "occ_conflict", RecordOnly: true,
+		{Name: "occ_for_update_vs_write", Group: "occ_conflict", ConflictRace: true, IgnoreRows: true,
 			Note: "FOR UPDATE versus a write",
 			Sessions: [][]string{
 				{"BEGIN", "SELECT name FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac' FOR UPDATE", "COMMIT"},
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'fu-b' WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
 			}},
-		{Name: "occ_for_key_share_vs_delete", Group: "occ_conflict", RecordOnly: true,
+		{Name: "occ_for_key_share_vs_delete", Group: "occ_conflict", ConflictRace: true, IgnoreRows: true,
 			Note: "FOR KEY SHARE versus deleting the key",
 			Sessions: [][]string{
 				{"BEGIN", "SELECT name FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac' FOR KEY SHARE", "COMMIT"},
 				{"BEGIN", "DELETE FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ac'", "COMMIT"},
 			}},
-		{Name: "occ_fk_delete_insert", Group: "occ_conflict", RecordOnly: true,
+		{Name: "occ_fk_delete_insert", Group: "occ_conflict", ConflictRace: true,
 			Note: "delete a referenced row while another session inserts a referencing row",
 			Sessions: [][]string{
 				{"BEGIN", "DELETE FROM baseline_conflict WHERE id = '00000000-0000-0000-0000-0000000000ab'", "COMMIT"},

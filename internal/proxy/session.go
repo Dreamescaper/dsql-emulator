@@ -14,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/Dreamescaper/dsql-emulator/internal/classify"
+	"github.com/Dreamescaper/dsql-emulator/internal/occ"
 	"github.com/Dreamescaper/dsql-emulator/internal/txn"
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
+	"github.com/Dreamescaper/dsql-emulator/rules"
 )
 
 // SQLSTATE and message reported for statements that arrive while a transaction
@@ -92,6 +94,19 @@ type session struct {
 	// occCommits counts, per injection rule, the commits that matched it.
 	occTouched map[string]bool
 	occCommits map[int]int
+	// hidden is the exchange the emulator is running on the upstream for its
+	// own purposes; while set, backend messages belong to it, not the client.
+	hidden *hiddenExchange
+	// occSavepoint records that the current transaction carries the savepoint
+	// the adjudicator rolls back to, and occDoomed that the backend refused it
+	// a lock, so it fails at COMMIT the way Aurora DSQL fails it.
+	occSavepoint bool
+	occDoomed    bool
+	// occInFlight is what the statement now executing would report if it is
+	// refused a lock, and occRepair the refused statement waiting for the
+	// ReadyForQuery that ends its failed exchange.
+	occInFlight *inFlight
+	occRepair   *inFlight
 
 	// job, when set, is the result the emulator synthesizes for the
 	// asynchronous statement in flight; described records whether the client's
@@ -138,6 +153,12 @@ func (s *session) handshake(ctx context.Context) (bool, error) {
 			var options []string
 			if cap := s.classifier.Ruleset().Limits.DMLRowsPerTxn; cap > 0 {
 				options = append(options, fmt.Sprintf("-c dsql.row_cap=%d", cap))
+			}
+			// Aurora DSQL never waits for a lock. Bounding the wait turns the
+			// block into the evidence that two transactions want the same rows,
+			// which the adjudicator resolves at COMMIT the way DSQL does.
+			if ms := s.classifier.Ruleset().OCC.LockTimeoutMS; ms > 0 {
+				options = append(options, fmt.Sprintf("-c lock_timeout=%dms", ms))
 			}
 			raw = wire.RewriteStartup(startup,
 				map[string]string{"default_transaction_isolation": "repeatable read"},
@@ -197,8 +218,16 @@ func (s *session) pumpBackend() {
 		}
 		s.fromUpstream.Add(int64(len(msg.Raw)))
 
+		if s.consumeHidden(msg) {
+			continue
+		}
 		if s.failureActive() {
 			s.consumeFailureMessage(msg)
+			continue
+		}
+		// A refused statement is being taken over; nothing it produced reaches
+		// the client, and its ReadyForQuery starts the repair.
+		if msg.Type != 'Z' && s.repairPending() {
 			continue
 		}
 
@@ -213,6 +242,9 @@ func (s *session) pumpBackend() {
 			// The asynchronous statement failed, so there is no job to report.
 			// Leaving it set would splice a job_id row into the next result.
 			s.takeJob()
+			if s.occIntercept(msg) {
+				continue
+			}
 			if s.rewriteConflictError(msg) {
 				continue
 			}
@@ -226,7 +258,14 @@ func (s *session) pumpBackend() {
 			s.takeJob()
 			var rfq pgproto3.ReadyForQuery
 			if err := rfq.Decode(msg.Body); err == nil {
+				if s.startRepair() {
+					continue
+				}
 				s.setStateTxStatus(rfq.TxStatus)
+				if s.noteTxStatus(rfq.TxStatus) {
+					s.establishSavepoint(msg.Raw)
+					continue
+				}
 			}
 		case 'C':
 			if encoded, ok := s.rewriteCommandTag(msg); ok {
@@ -350,11 +389,13 @@ func (s *session) handleQuery(msg wire.Message) {
 
 	s.addOccTables(result.Tables)
 	if endsTransaction(result.Kinds) {
-		if isCommit(result.Kinds) && s.occCommitConflict() {
+		if isCommit(result.Kinds) && (s.occAdjudicated() || s.occCommitConflict()) {
 			s.occFailure(false)
 			return
 		}
 		s.resetOcc()
+	} else if s.tracker.Stats().InTxn {
+		s.setInFlight(occ.Analyze(query.String), false, nil)
 	}
 
 	if rewritten := s.rewriteSQL(query.String); rewritten != "" {
@@ -424,7 +465,11 @@ func (s *session) handleParse(msg wire.Message) {
 		}
 	}
 
-	s.statements[parse.Name] = statementInfo{kinds: result.Kinds, tables: result.Tables}
+	s.statements[parse.Name] = statementInfo{
+		kinds:  result.Kinds,
+		tables: result.Tables,
+		intent: occ.Analyze(parse.Query),
+	}
 	s.forward(msg)
 }
 
@@ -465,11 +510,13 @@ func (s *session) handleBind(msg wire.Message) {
 
 	s.addOccTables(info.tables)
 	if endsTransaction(info.kinds) {
-		if isCommit(info.kinds) && s.occCommitConflict() {
+		if isCommit(info.kinds) && (s.occAdjudicated() || s.occCommitConflict()) {
 			s.occFailure(true)
 			return
 		}
 		s.resetOcc()
+	} else if s.tracker.Stats().InTxn {
+		s.setInFlight(info.intent, true, bind.ResultFormatCodes)
 	}
 	if info.jobID != "" {
 		s.restoreJob(info.jobID)
@@ -614,6 +661,9 @@ func (s *session) addOccTables(tables []string) {
 func (s *session) resetOcc() {
 	s.stateMu.Lock()
 	s.occTouched = nil
+	s.occDoomed = false
+	s.occInFlight = nil
+	s.occRepair = nil
 	s.stateMu.Unlock()
 }
 
@@ -660,17 +710,9 @@ func (s *session) occCommitConflict() bool {
 // occFailure fails a commit with a conflict, rolling the upstream transaction
 // back instead of committing it.
 func (s *session) occFailure(extended bool) {
-	occ := s.classifier.Ruleset().OCC
-	code := occ.SQLState
-	if code == "" {
-		code = "40001"
-	}
-	message := occ.Error
-	if message == "" {
-		message = "change conflicts with another transaction (OC000)"
-	}
+	code, message := conflictError(s.classifier.Ruleset().OCC)
 
-	s.logger.Info("injected occ conflict", "code", code)
+	s.logger.Info("reported occ conflict at commit", "code", code)
 	s.sendError(code, message, "occ_conflict")
 	s.resetOcc()
 
@@ -693,22 +735,30 @@ func isCommit(kinds []classify.Kind) bool {
 	return false
 }
 
-// rewriteConflictError rewrites a serialization failure into DSQL's wording.
-func (s *session) rewriteConflictError(msg wire.Message) bool {
-	occ := s.classifier.Ruleset().OCC
-	code := occ.SQLState
+// conflictError is the error Aurora DSQL reports for a conflict.
+func conflictError(cfg rules.OCC) (code, message string) {
+	code, message = cfg.SQLState, cfg.Error
 	if code == "" {
-		code = "40001"
+		code = occ.CodeSerialization
 	}
+	if message == "" {
+		message = "change conflicts with another transaction (OC000)"
+	}
+	return code, message
+}
+
+// rewriteConflictError rewrites a conflict the backend raised into DSQL's
+// wording. A refused lock is reported as a conflict too: PostgreSQL waits where
+// DSQL adjudicates, so a wait that ran out is the same event.
+func (s *session) rewriteConflictError(msg wire.Message) bool {
+	code, message := conflictError(s.classifier.Ruleset().OCC)
 
 	var er pgproto3.ErrorResponse
-	if err := er.Decode(msg.Body); err != nil || er.Code != code {
+	if err := er.Decode(msg.Body); err != nil || !occ.IsConflict(er.Code) {
 		return false
 	}
-	er.Message = occ.Error
-	if er.Message == "" {
-		er.Message = "change conflicts with another transaction (OC000)"
-	}
+	er.Code = code
+	er.Message = message
 	er.Detail = ""
 	er.Hint = ""
 
@@ -897,6 +947,9 @@ func (s *session) rewriteCommandTag(msg wire.Message) ([]byte, bool) {
 type statementInfo struct {
 	kinds  []classify.Kind
 	tables []string
+	// intent is what the statement would report if the backend refused it a
+	// lock; nil when the emulator cannot reproduce that answer.
+	intent *occ.Intent
 	// jobID is set for an asynchronous statement, so a cached prepared
 	// statement re-executed without a new Parse still answers with one.
 	jobID string

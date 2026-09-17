@@ -34,6 +34,7 @@ make run                # run the emulator (listen 5432 -> upstream 5433)
 make down               # stop Postgres and remove volumes
 make baseline-dry-run   # print the conformance suite without connecting
 make baseline           # record a golden record from a real DSQL cluster
+                        # (rewrites only the fixtures whose content changed)
 make conformance        # diff the emulator against the golden record
 ```
 
@@ -44,8 +45,8 @@ costs money: never run it without an explicit request and a fresh token.
 
 ## Documentation maintenance — required
 
-Two documents must be kept current. Treat updating them as part of the task, not
-an afterthought. Update them in the same turn as the code change.
+Three documents must be kept current. Treat updating them as part of the task,
+not an afterthought. Update them in the same turn as the code change.
 
 ### `docs/PLAN.md` — the design (stable)
 
@@ -71,6 +72,27 @@ On every work session:
 3. Add rows to the **Decisions log** for any non-obvious choice, with the
    rationale.
 4. Update **Next up** to reflect what is now unblocked.
+
+### `README.md` — the product (present tense)
+
+Describe the current state and nothing else. A reader arrives with no prior
+version in mind, so a sentence written as a delta describes something they
+cannot see.
+
+- Never write change-relative wording: "no longer", "now", "previously", "used
+  to", "still", "has been fixed", "as of this release". If a sentence only makes
+  sense to someone who knows what the emulator did last month, it does not
+  belong here.
+- When behavior changes, rewrite the affected sentence to state the new behavior
+  plainly and delete the claim it replaces. Do not contrast the two.
+- Contrasting with *Aurora DSQL or PostgreSQL* is not change-relative wording and
+  is often the whole point ("the loser is the first writer refused a lock, not
+  the second committer"). Contrasting with a previous version of the emulator is.
+- Keep the known divergences honest and current: a limitation that has been
+  closed is deleted, not annotated.
+
+History belongs in `docs/PROGRESS.md` and the reasoning behind a design belongs
+in `docs/PLAN.md`. Neither belongs in the README.
 
 Rules:
 

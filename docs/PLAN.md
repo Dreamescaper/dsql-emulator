@@ -43,9 +43,9 @@ client ──TLS──> [dsql-emu]
                   ├─ classifier        libpg_query AST → allow | reject(code) | rewrite
                   ├─ session FSM       txn status, ddl/dml counts, row count, age
                   ├─ rewriter          CREATE INDEX ASYNC, BEGIN→RR, version probes
-                  └─ OCC adjudicator   commit-time 40001 injection
+                  └─ OCC adjudicator   bounded lock waits → commit-time 40001
                          │
-                         └──1:1──> postgres (default_transaction_isolation=repeatable read)
+                         └──1:1──> postgres (repeatable read, lock_timeout=50ms)
 ```
 
 One dedicated PostgreSQL connection per client session. Transactional state and
@@ -73,43 +73,94 @@ Three stacked modes, each explicit about what it fakes:
    `probability`, `per-session`) force a transaction to fail at `COMMIT` with
    `40001` plus a synthetic OCC code. This is the feature the other emulators
    lack, and the reason the project exists.
-3. **Adjudication shim** — a global write-intent registry keyed by
-   `(table, key predicate)`; at commit, inject `40001` on overlap using a fake
-   commit timestamp. Approximates lock-free OCC. Start coarse, refine later.
+3. **Adjudication** — the backend's own lock manager is the write-intent
+   registry. Its lock waits are bounded, and a refused lock is reported at
+   `COMMIT` as `40001` instead of at the statement.
 
 ### What the emulator does
 
 1. **Native delegation (done).** The upstream runs at `REPEATABLE READ`, so a
    write-write conflict raises PostgreSQL's serialization failure. The emulator
    rewrites that error to DSQL's wording, `change conflicts with another
-   transaction (OC000)`, keeping SQLSTATE `40001`. The upstream still *blocks*
-   before failing, where DSQL is lock-free; that latency divergence remains.
+   transaction (OC000)`, keeping SQLSTATE `40001`. A refused lock (`55P03`) is
+   rewritten the same way, because under a bounded wait it means the same
+   thing. This is the fallback for what mode 3 declines to take over.
 2. **Deterministic injection (done).** `occ.inject` rules name tables and an
    interval; when a transaction that touched one of them commits, the emulator
    rolls the upstream back instead of committing and reports the conflict. This
    is what lets an application unit-test its retry loop without a real race.
    Injection applies to explicit transactions only, since an implicit
    transaction has already committed by the time it ends.
-3. **Adjudication shim (not built).** A global write-intent registry would
-   approximate lock-free conflict at commit without the blocking.
+3. **Adjudication (done).** No registry is built, because the backend already
+   keeps one. PostgreSQL takes row locks where DSQL adjudicates, so the set of
+   transactions waiting on each other *is* the write-intent graph; what the
+   emulator adds is a bound on the wait and a different place to report it.
 
-What the emulator does *not* match, and why, is now measured rather than
-assumed. The recording shows DSQL letting both writers' statements succeed and
-failing the **second committer** at `COMMIT` with `40001 change conflicts with
-another transaction (OC000)`. That message is byte-for-byte what the emulator
-already synthesizes for PostgreSQL's serialization failure, so the wording is
-exact; the difference is *when* and *how* the loser fails. PostgreSQL blocks the
-second writer at its statement, so it errors there instead of at commit. The
-four conflicting probes are therefore `RecordOnly`.
+### How adjudication works
 
-The suite can now run a case on several connections at once, so DSQL's conflict
-output is recorded rather than assumed. Conflicting cases are marked
-`RecordOnly`: they are recorded against a real cluster but never replayed
-against the emulator, because PostgreSQL blocks before failing where DSQL is
-lock-free, and a replay would hang. Non-conflicting concurrency (disjoint
-writes, a non-key update against a referencing insert) is replayed and
-enforced. Sessions step with a fixed delay rather than barriers, and each step
-has a timeout so a blocking target cannot stall a run.
+The design rests on a measurement rather than an assumption. A `BEFORE ROW`
+trigger cannot be used to intercept a conflict, because `GetTupleForTrigger`
+locks the tuple before the trigger fires: a trigger meant to detect the
+conflict never runs. What does work is bounding the wait.
+
+1. The session asks the backend for `lock_timeout` (`occ.lock_timeout_ms`,
+   50ms). A wait that runs out becomes `55P03`, in tens of milliseconds rather
+   than for as long as the other transaction lives. When the other transaction
+   has already committed, `REPEATABLE READ` raises `40001` at the statement with
+   no wait at all. Both codes mean the same thing: two transactions wanted the
+   same rows.
+2. When a transaction opens, the emulator establishes a savepoint on it,
+   invisibly — the client's own `ReadyForQuery` is withheld until it is in
+   place. One per transaction is enough; a transaction that reaches the
+   savepoint is doomed, so the work it loses is discarded at `COMMIT` anyway,
+   and one subtransaction is cheaper than one per statement.
+3. On either code, the emulator rolls back to that savepoint, which leaves the
+   transaction usable and its snapshot intact, and answers the refused
+   statement the way DSQL answers it: as if it had run. The row count comes
+   from a **shadow** — a read-only statement derived from the refused one's
+   parse tree, which takes no locks and so cannot be refused in turn. An
+   `UPDATE` or `DELETE` becomes `SELECT count(*)` over the same relation and
+   predicate; an `INSERT ... VALUES` states its own count and needs no shadow;
+   a locking `SELECT` is re-run with the locking clause removed, so the client
+   gets its rows.
+4. The transaction is marked doomed and fails at `COMMIT` with
+   `40001 change conflicts with another transaction (OC000)`.
+
+Outside an explicit transaction there is no commit to defer to — the implicit
+transaction has already ended — so the statement itself reports the conflict,
+with DSQL's wording. This is the one place the emulator reports a conflict at a
+statement on purpose, and it is what DSQL does too.
+
+### What adjudication does not reproduce
+
+- **First writer wins, not first committer.** DSQL fails whichever transaction
+  the cluster adjudicates second; the emulator fails whichever asked the
+  backend for the row second. The two coincide when a transaction commits in
+  the order it wrote, and diverge when it does not.
+- **A doomed transaction does not read its own writes.** They were rolled back
+  to the savepoint. It cannot commit, so nothing it reads can be acted on.
+- **Some statements keep PostgreSQL's behavior.** A statement whose answer the
+  emulator cannot reproduce exactly is not answered with a fabricated one: the
+  conflict is reported where PostgreSQL raised it, with DSQL's wording and
+  SQLSTATE. That covers parameterised statements (the bound values belong to
+  the statement that was refused, not to the shadow that would replace it),
+  `RETURNING`, `INSERT ... SELECT`, `ON CONFLICT`, and multi-statement simple
+  queries. Closing the parameterised case means capturing parameter types from
+  the backend's `ParameterDescription` so a shadow can declare them.
+- **`lock_timeout` applies to every statement**, not only to DML. A DDL that
+  cannot take its lock in time is reported as a conflict too. DSQL does not
+  wait for a DDL lock either, so this errs toward its model rather than
+  PostgreSQL's, but the code is one DSQL would raise for a different reason.
+
+The suite runs a case on several connections at once, so DSQL's conflict output
+is recorded rather than assumed. The four conflicting cases are now replayed
+against the emulator and enforced, marked `ConflictRace`: which transaction
+loses is a race on both sides, so what is asserted is that as many transactions
+lost, with the same SQLSTATE, at the step the conflict surfaces at.
+Non-conflicting concurrency (disjoint writes, a non-key update against a
+referencing insert) is replayed and enforced as before. Sessions step with a
+fixed delay rather than barriers, and each step has a timeout so a blocking
+target cannot stall a run.
 
 ### Foreign keys are an OCC source, not a reject rule
 
@@ -121,15 +172,16 @@ applying `KEY SHARE` to referenced rows. Therefore:
 - FK is a **conflict source** in the adjudicator, alongside write-write and
   `FOR UPDATE` / `FOR KEY SHARE`.
 - Vanilla PostgreSQL enforces FKs with locks, so a concurrent
-  delete-referenced-row / insert-referencing-row **blocks** before resolving.
-  DSQL fails lock-free at commit on both sides. Outcome and winner can differ.
-- Partial mitigation: rewrite non-deferred FKs to `DEFERRABLE INITIALLY
-  DEFERRED` on the backend so PostgreSQL's check also lands at `COMMIT`. Timing
-  gets closer; statement-time locking remains. True lock-free needs the
-  adjudicator.
-- Conflict tracking must be **key-column-aware**: changing a non-key column on a
-  referenced row does not conflict with a referencing insert; changing the key
-  does.
+  delete-referenced-row / insert-referencing-row would block before resolving.
+  The adjudicator removes the block: the FK's `KEY SHARE` lock on the parent is
+  a write intent like any other, so the wait is bounded and reported at
+  `COMMIT`. No deferred-constraint rewrite is needed.
+- Conflict tracking is **key-column-aware** without the emulator implementing
+  it. PostgreSQL's row-lock modes already draw that line: a non-key update
+  takes `NO KEY EXCLUSIVE`, which does not conflict with the `KEY SHARE` a
+  referencing insert takes, while a key change or a delete does. Both the
+  conflicting and the non-conflicting FK probes are enforced against the
+  emulator.
 
 Reference error format to emit:
 
@@ -351,7 +403,31 @@ divergence); known gaps are reported and not enforced. Cases the emulator runs
 that the record does not cover are listed as unrecorded, so a probe added since
 the last baseline is never silently unverified. The emulator's copy of a case
 supplies step text and suite metadata, so editing the suite takes effect without
-re-recording.
+re-recording, and what is replayed is the suite's decision rather than the
+record's.
+
+A recording writes only the fixtures whose content changed, where "content" is
+what the record holds the emulator to rather than everything the run saw. A run
+observes things that differ every time and are enforced against nothing: a
+generated job id in a case marked `IgnoreRows`, and which of two transactions
+lost a `ConflictRace`. Change detection waives exactly what the comparison
+waives, so it is as sensitive as the replay it guards and no more. Re-recording is how
+you find out whether the cluster still answers the same way, and usually it
+does; a save that rewrote every fixture anyway would put a fresh timestamp in
+every diff and bury the runs that found something. A fixture whose group
+answered exactly as before is left on disk untouched, `recorded_at` included, so
+the record's git history is a list of the runs that changed it. Comparison is on
+content with the timestamp cleared, rendered through the same marshaller on both
+sides, so a field added to the record later counts without an equality function
+to keep in step. That a run happened at all is reported by the recorder, to be
+logged in `PROGRESS.md` where runs belong.
+
+`TestRerecordingAnUnchangedClusterWritesNothing` holds this to the committed
+record itself, without a cluster or Docker: the recorded observations are put
+back into the order a run produces them in, saved with a later timestamp, and
+every fixture must come out byte-identical. The 2026-09-17 run bore it out: of
+thirteen fixtures, ten were left untouched, two differed only in generated job
+ids, and one carried a real change.
 
 Safety, because the target is someone's cluster:
 
@@ -363,7 +439,7 @@ Safety, because the target is someone's cluster:
 - `--dry-run` prints the whole suite without connecting.
 
 Re-run `make baseline` whenever DSQL changes; the record is a snapshot, not a
-fixture to keep forever.
+fixture to keep forever. A run that changes nothing costs only the run.
 
 ## Milestones
 
@@ -374,7 +450,7 @@ fixture to keep forever.
 | M2 | Session FSM: RR enforcement, 1-DDL, DDL/DML split, row cap, age | done |
 | M3 | Transaction coordinator: backend rollback, aborted-transaction state | done |
 | M4 | Auth/TLS/version emulation; single DB; UTC/C collation | done (tokens accepted via a trust-backed upstream, not validated) |
-| M5 | OCC modes 1 + 2, OCC error codes, FK conflict fixtures | in progress (modes 1 and 2 and the FK conflict fixtures done; the mode 3 adjudicator pending) |
+| M5 | OCC modes 1 + 2 + 3, OCC error codes, FK conflict fixtures | done |
 | M6 | `CREATE INDEX ASYNC` rewrite + `sys.jobs` / `sys.wait_for_job` | done |
 | M7 | Conformance harness: golden record + emulator diff | done |
 
@@ -388,7 +464,7 @@ internal/wire/           protocol framing and message decoding
 internal/classify/       libpg_query AST → verdict and statement kinds
 internal/txn/            transaction state machine and limits          (M2)
 internal/conformance/    probe suite, recording, and comparison        (M7)
-internal/occ/            conflict injection/adjudication               (M5)
+internal/occ/            conflict codes, intents, and shadow statements (M5)
 docker/init/             backing init: sys.jobs, row cap, admin role (M6)
 rules/                   embedded versioned ruleset and loader
 test/integration/        container-backed tests
@@ -443,7 +519,7 @@ Answered by the concurrency probes (recorded 2026-09-15):
 
 | Question | Answer |
 |----------|--------|
-| When does the loser fail? | At `COMMIT`, not at the statement: both writers' `UPDATE`s succeed and the second committer is rejected. |
+| When does the loser fail? | At `COMMIT`, not at the statement: both writers' `UPDATE`s succeed and the second committer is rejected. The emulator now reproduces this. |
 | Error wording | `40001 change conflicts with another transaction (OC000)` — identical to what the emulator synthesizes. |
 | `FOR UPDATE` versus a write | Conflicts; the `FOR UPDATE` session committed first and the writer's commit failed. |
 | `FOR KEY SHARE` versus deleting the key | Conflicts at commit. |
@@ -451,10 +527,28 @@ Answered by the concurrency probes (recorded 2026-09-15):
 | Non-key update versus a referencing insert | No conflict. |
 | Writes to different rows | No conflict. |
 
+Answered by the local measurements on 2026-09-17, which do not need a cluster:
+
+| Question | Answer |
+|----------|--------|
+| Can a `BEFORE ROW` trigger intercept a conflict before the block? | No. `GetTupleForTrigger` locks the tuple before the trigger fires, so the trigger never runs; a database-side registry cannot avoid the wait. |
+| What does a bounded wait cost? | A conflicting write that blocked for ~3s returns in ~50ms as `55P03`, and the transaction survives a rollback to a savepoint with its snapshot intact. |
+| Does a non-key update block a referencing insert under a bounded wait? | No: `NO KEY EXCLUSIVE` and `KEY SHARE` do not conflict, so the insert commits in under a millisecond. |
+
+Answered by the baseline run on 2026-09-17:
+
+| Question | Answer |
+|----------|--------|
+| Do DSQL's row counts for a losing statement match the emulator's shadow? | Yes for the probed shapes: the loser reports `UPDATE 1`, `DELETE 1`, `INSERT 0 1` and `SELECT 1` exactly as the shadow synthesizes them, and the emulator matches all 212 cases against the run. |
+| Is the loser a race, or does DSQL pick deterministically? | A race. `occ_fk_delete_insert` failed the other session than the 2026-09-16 run did, from the same probe. |
+
 Still open:
 
 - Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`; only the
   delete/insert and non-key-update pairs are probed.
+- Whether a losing statement's row count still matches when its predicate spans
+  rows the transaction's own snapshot no longer agrees on; every probe matches a
+  single row by primary key.
 
 ## Prior art
 

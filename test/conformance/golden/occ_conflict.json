@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-16T18:30:50.287896Z",
+  "recorded_at": "2026-09-17T11:20:47.072516Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -9,8 +9,22 @@
       "group": "occ_conflict",
       "note": "two writers to one row: the loser fails at commit",
       "steps": null,
-      "record_only": true,
+      "conflict_race": true,
       "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ],
         [
           {
             "outcome": "ok",
@@ -24,20 +38,6 @@
             "outcome": "error",
             "sqlstate": "40001",
             "message": "change conflicts with another transaction (OC000)"
-          }
-        ],
-        [
-          {
-            "outcome": "ok",
-            "command_tag": "BEGIN"
-          },
-          {
-            "outcome": "ok",
-            "command_tag": "UPDATE 1"
-          },
-          {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
           }
         ]
       ]
@@ -47,7 +47,8 @@
       "group": "occ_conflict",
       "note": "FOR UPDATE versus a write",
       "steps": null,
-      "record_only": true,
+      "ignore_rows": true,
+      "conflict_race": true,
       "sessions": [
         [
           {
@@ -62,14 +63,13 @@
             ],
             "rows": [
               [
-                "ww-b"
+                "ww-a"
               ]
             ]
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -82,8 +82,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -93,7 +94,8 @@
       "group": "occ_conflict",
       "note": "FOR KEY SHARE versus deleting the key",
       "steps": null,
-      "record_only": true,
+      "ignore_rows": true,
+      "conflict_race": true,
       "sessions": [
         [
           {
@@ -108,7 +110,7 @@
             ],
             "rows": [
               [
-                "fu-b"
+                "ww-a"
               ]
             ]
           },
@@ -139,7 +141,7 @@
       "group": "occ_conflict",
       "note": "delete a referenced row while another session inserts a referencing row",
       "steps": null,
-      "record_only": true,
+      "conflict_race": true,
       "sessions": [
         [
           {

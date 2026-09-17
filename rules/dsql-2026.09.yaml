@@ -295,8 +295,15 @@ limits:
   txn_age_seconds: 1800
 
 occ:
+  # What DSQL treats as a conflict. The emulator does not read these: the
+  # backing engine's row-lock modes already draw the same lines, and a refused
+  # lock is what the adjudicator acts on. They record what is being emulated.
   sources: ["write_write", "select_for_update", "select_for_key_share", "fk_key_share"]
   key_columns_only_for: ["fk_key_share"]
   error: "change conflicts with another transaction (OC000)"
   sqlstate: "40001"
+  # PostgreSQL waits for a row lock where DSQL adjudicates at commit. Bounding
+  # the wait turns it into the evidence of a conflict, which the emulator then
+  # reports at COMMIT the way DSQL does, without the wait.
+  lock_timeout_ms: 50
   inject: []

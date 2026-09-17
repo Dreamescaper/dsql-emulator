@@ -62,6 +62,10 @@ func compareSessions(golden, emulated RecordedCase) []Difference {
 		}}
 	}
 
+	if emulated.ConflictRace || golden.ConflictRace {
+		return compareConflictRace(golden, emulated)
+	}
+
 	var diffs []Difference
 	for i := range golden.SessionResults {
 		var steps []string
@@ -70,6 +74,60 @@ func compareSessions(golden, emulated RecordedCase) []Difference {
 		}
 		diffs = append(diffs, compareObservations(golden, emulated, i, steps,
 			golden.SessionResults[i], emulated.SessionResults[i])...)
+	}
+	return diffs
+}
+
+// compareConflictRace compares a case whose loser is decided by a race. Every
+// step before the last is compared as usual, because Aurora DSQL lets the
+// losing transaction's statements succeed too. The last step of each session is
+// the COMMIT the conflict surfaces at, and what is asserted there is that as
+// many transactions lost as the record shows, with the SQLSTATE it carries --
+// not which of them lost, which neither system decides the same way twice.
+func compareConflictRace(golden, emulated RecordedCase) []Difference {
+	var diffs []Difference
+	var goldenLost, emulatedLost []Observation
+
+	for i := range golden.SessionResults {
+		want, got := golden.SessionResults[i], emulated.SessionResults[i]
+		var steps []string
+		if i < len(emulated.Case.Sessions) {
+			steps = emulated.Case.Sessions[i]
+		}
+		if len(want) != len(got) || len(want) == 0 {
+			diffs = append(diffs, compareObservations(golden, emulated, i, steps, want, got)...)
+			continue
+		}
+
+		diffs = append(diffs, compareObservations(golden, emulated, i, steps,
+			want[:len(want)-1], got[:len(got)-1])...)
+
+		if last := want[len(want)-1]; last.Outcome == "error" {
+			goldenLost = append(goldenLost, last)
+		}
+		if last := got[len(got)-1]; last.Outcome == "error" {
+			emulatedLost = append(emulatedLost, last)
+		}
+	}
+
+	add := func(field, want, got string) {
+		diffs = append(diffs, Difference{
+			Case:     golden.Name,
+			Field:    field,
+			Golden:   want,
+			Emulator: got,
+			KnownGap: emulated.KnownGap,
+		})
+	}
+
+	if len(goldenLost) != len(emulatedLost) {
+		add("conflict_losers", fmt.Sprint(len(goldenLost)), fmt.Sprint(len(emulatedLost)))
+		return diffs
+	}
+	for i, got := range emulatedLost {
+		if want := goldenLost[i]; want.SQLState != got.SQLState {
+			add("sqlstate", want.SQLState, got.SQLState)
+		}
 	}
 	return diffs
 }
@@ -131,9 +189,10 @@ func compareObservations(golden, emulated RecordedCase, session int, steps []str
 	return diffs
 }
 
-// CompareSuites matches cases by name and reports every difference. Cases the
-// record marks record-only have no emulator counterpart by design and are
-// skipped.
+// CompareSuites matches cases by name and reports every difference. What is
+// replayed is the suite's decision, not the record's: a case the suite now runs
+// is compared against what was recorded for it, even if it was record-only when
+// the record was made.
 func CompareSuites(golden, emulated *Golden) []Difference {
 	index := make(map[string]RecordedCase, len(emulated.Cases))
 	for _, c := range emulated.Cases {
@@ -142,11 +201,12 @@ func CompareSuites(golden, emulated *Golden) []Difference {
 
 	var diffs []Difference
 	for _, want := range golden.Cases {
-		if want.RecordOnly {
-			continue
-		}
 		got, ok := index[want.Name]
 		if !ok {
+			// The suite declined to replay it, which the record expected.
+			if want.RecordOnly {
+				continue
+			}
 			diffs = append(diffs, Difference{
 				Case:     want.Name,
 				Field:    "missing",

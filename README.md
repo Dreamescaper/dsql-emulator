@@ -84,14 +84,20 @@ conn, err := pgx.Connect(ctx, dsn)
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them. The list applies to a column added by `ALTER TABLE ADD COLUMN` as well as one a `CREATE TABLE` declares |
 | Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
 | `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. `ALTER COLUMN ... TYPE` is refused whatever the target type, and dropping a primary-key column is refused. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused |
-| OCC | Conflicts reported as `40001 change conflicts with another transaction (OC000)`, plus deterministic injection of conflicts so retry loops can be tested |
+| OCC | Conflicts adjudicated at `COMMIT` without waiting for locks, reported as `40001 change conflicts with another transaction (OC000)`, across write-write, `FOR UPDATE`, `FOR KEY SHARE` and foreign-key overlap; plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
 ## What it does not do
 
-- **PostgreSQL blocks before failing; DSQL is lock-free.** A conflicting write
-  waits for the other transaction, then fails, where DSQL fails the second
-  committer without waiting. The outcome matches, the timing does not.
+- **The loser is the first writer refused a lock, not the second committer.**
+  The backend's lock wait is bounded, the refused statement is answered as if it
+  had run, and the transaction fails at `COMMIT` the way DSQL fails it. Which
+  transaction loses is therefore decided when the rows are asked for rather than
+  when they are committed, so a transaction that commits in a different order
+  than it wrote can lose where DSQL would not. A doomed transaction does not
+  read its own writes. A conflict on a parameterised statement, a `RETURNING`,
+  an `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is
+  reported at the statement rather than at `COMMIT`.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
 - **The `ASYNC` rewrite matches whole statements.** A multi-statement simple
@@ -111,7 +117,7 @@ conn, err := pgx.Connect(ctx, dsn)
   `SHOW server_version`, `current_setting('server_version')`,
   `current_setting('server_version_num')`, and `SHOW server_version_num` are
   rewritten to DSQL's values. The rewrites match whole statements, so a version
-  read another way still reports the backing engine.
+  read another way reports the backing engine.
 - **Rejection wording is approximate.** The SQLSTATE is the contract;
   messages mirror DSQL's meaning and drift.
 - **No control plane.** Cluster creation, IAM and tagging are out of scope;
@@ -146,14 +152,16 @@ and a harness to check it.
 ```sh
 make baseline-dry-run   # print the probe suite, no connection
 make baseline           # record a golden record from a real cluster (costs money)
+                        # only the fixtures whose answers changed are rewritten
 make conformance        # diff the emulator against the record, needs Docker only
 ```
 
 `make baseline` needs `DSQL_HOST` and `DSQL_TOKEN`, and is the only command that
 talks to a cluster. Probes cover the dialect, types, transactions, queries,
 concurrency, and the connection environment. Conflicting concurrency cases are
-recorded but not replayed, because PostgreSQL blocks where DSQL does not, so a
-replay would hang rather than diverge.
+replayed and enforced like the rest: which transaction loses is a race on both
+sides, so what is checked is that one lost, with the same SQLSTATE, at the step
+the conflict surfaces at.
 
 ## Releases
 

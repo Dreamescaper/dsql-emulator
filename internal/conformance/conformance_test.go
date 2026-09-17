@@ -1,6 +1,7 @@
 package conformance_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -72,7 +73,7 @@ func TestGoldenRoundTrip(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "golden", "dsql.json")
-	if err := conformance.Save(path, golden); err != nil {
+	if _, err := conformance.Save(path, golden); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func TestSaveDirAndLoadDirRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := conformance.SaveDir(dir, golden); err != nil {
+	if _, err := conformance.SaveDir(dir, golden); err != nil {
 		t.Fatalf("save dir: %v", err)
 	}
 	for _, name := range []string{"supported.json", "unsupported.json"} {
@@ -148,12 +149,12 @@ func TestSaveDirAndLoadDirRoundTrip(t *testing.T) {
 func TestSaveDirRefusesToEmptyTheRecord(t *testing.T) {
 	dir := t.TempDir()
 	existing := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "supported")}}
-	if err := conformance.SaveDir(dir, existing); err != nil {
+	if _, err := conformance.SaveDir(dir, existing); err != nil {
 		t.Fatalf("save dir: %v", err)
 	}
 
 	for _, empty := range []*conformance.Golden{nil, {Suite: "s"}} {
-		if err := conformance.SaveDir(dir, empty); err == nil {
+		if _, err := conformance.SaveDir(dir, empty); err == nil {
 			t.Fatal("expected a record with no cases to be refused")
 		}
 	}
@@ -170,12 +171,12 @@ func TestSaveDirRefusesToEmptyTheRecord(t *testing.T) {
 func TestSaveDirReplacesStaleFixtures(t *testing.T) {
 	dir := t.TempDir()
 	first := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "old_group")}}
-	if err := conformance.SaveDir(dir, first); err != nil {
+	if _, err := conformance.SaveDir(dir, first); err != nil {
 		t.Fatalf("save dir: %v", err)
 	}
 
 	second := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "new_group")}}
-	if err := conformance.SaveDir(dir, second); err != nil {
+	if _, err := conformance.SaveDir(dir, second); err != nil {
 		t.Fatalf("save dir: %v", err)
 	}
 
@@ -195,7 +196,7 @@ func TestLoadDirRejectsDuplicateCaseNames(t *testing.T) {
 	dir := t.TempDir()
 	for _, group := range []string{"one", "two"} {
 		g := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("dup", group)}}
-		if err := conformance.Save(filepath.Join(dir, group+".json"), g); err != nil {
+		if _, err := conformance.Save(filepath.Join(dir, group+".json"), g); err != nil {
 			t.Fatalf("save: %v", err)
 		}
 	}
@@ -389,5 +390,288 @@ func TestCompareStepCountDifference(t *testing.T) {
 	diffs := conformance.Failures(conformance.Compare(golden, emulated))
 	if len(diffs) != 1 || diffs[0].Field != "step_count" {
 		t.Fatalf("expected a step_count difference, got %v", diffs)
+	}
+}
+
+// A re-recording that found the same answers must leave the fixture exactly as
+// it was, so a diff of the golden record shows the runs that changed something
+// rather than every run that happened.
+func TestSaveLeavesAnUnchangedRecordAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	first := &conformance.Golden{
+		RecordedAt: time.Date(2026, 9, 16, 18, 30, 0, 0, time.UTC),
+		Target:     "aurora-dsql",
+		Suite:      "s",
+		Cases:      []conformance.RecordedCase{caseInGroup("a", "g")},
+	}
+	if changed, err := conformance.Save(path, first); err != nil || !changed {
+		t.Fatalf("first save: changed=%v err=%v, want changed", changed, err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// The same observations, recorded a day later.
+	again := *first
+	again.RecordedAt = time.Date(2026, 9, 17, 9, 0, 0, 0, time.UTC)
+	changed, err := conformance.Save(path, &again)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if changed {
+		t.Error("a record that observed the same thing was reported as changed")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("the fixture was rewritten:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// An observation that differs is what a re-recording exists to catch, so the
+// fixture is rewritten, timestamp and all.
+func TestSaveRewritesAChangedRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	recorded := time.Date(2026, 9, 16, 18, 30, 0, 0, time.UTC)
+	first := &conformance.Golden{
+		RecordedAt: recorded,
+		Suite:      "s",
+		Cases:      []conformance.RecordedCase{caseInGroup("a", "g")},
+	}
+	if _, err := conformance.Save(path, first); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	second := &conformance.Golden{
+		RecordedAt: recorded.Add(24 * time.Hour),
+		Suite:      "s",
+		Cases:      []conformance.RecordedCase{caseInGroup("a", "g")},
+	}
+	second.Cases[0].Observations = []conformance.Observation{{Outcome: "error", SQLState: "0A000"}}
+
+	changed, err := conformance.Save(path, second)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if !changed {
+		t.Fatal("a record with a different observation was reported as unchanged")
+	}
+
+	loaded, err := conformance.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !loaded.RecordedAt.Equal(second.RecordedAt) {
+		t.Errorf("got recorded_at %s want %s", loaded.RecordedAt, second.RecordedAt)
+	}
+}
+
+// SaveDir reports which groups changed, so a run that found something can be
+// told apart from one that did not without reading the diff.
+func TestSaveDirReportsOnlyTheGroupsThatChanged(t *testing.T) {
+	dir := t.TempDir()
+	golden := &conformance.Golden{
+		RecordedAt: time.Date(2026, 9, 16, 18, 30, 0, 0, time.UTC),
+		Suite:      "s",
+		Cases: []conformance.RecordedCase{
+			caseInGroup("a", "one"),
+			caseInGroup("b", "two"),
+		},
+	}
+	changed, err := conformance.SaveDir(dir, golden)
+	if err != nil {
+		t.Fatalf("save dir: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("the first save reported %v, want both groups", changed)
+	}
+
+	// Recorded again a day later, with one group answering differently.
+	again := *golden
+	again.RecordedAt = again.RecordedAt.Add(24 * time.Hour)
+	again.Cases = []conformance.RecordedCase{caseInGroup("a", "one"), caseInGroup("b", "two")}
+	again.Cases[1].Observations = []conformance.Observation{{Outcome: "error", SQLState: "42601"}}
+
+	changed, err = conformance.SaveDir(dir, &again)
+	if err != nil {
+		t.Fatalf("save dir: %v", err)
+	}
+	if len(changed) != 1 || changed[0] != "two" {
+		t.Fatalf("got %v, want only the group that changed", changed)
+	}
+
+	one, err := conformance.Load(filepath.Join(dir, "one.json"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !one.RecordedAt.Equal(golden.RecordedAt) {
+		t.Errorf("the unchanged group was re-dated to %s", one.RecordedAt)
+	}
+}
+
+// A fixture removed because its group is gone counts as a change: the record
+// is not what it was, even though nothing was written.
+func TestSaveDirReportsPrunedGroups(t *testing.T) {
+	dir := t.TempDir()
+	first := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("a", "old_group")}}
+	if _, err := conformance.SaveDir(dir, first); err != nil {
+		t.Fatalf("save dir: %v", err)
+	}
+
+	second := &conformance.Golden{Suite: "s", Cases: []conformance.RecordedCase{caseInGroup("b", "new_group")}}
+	changed, err := conformance.SaveDir(dir, second)
+	if err != nil {
+		t.Fatalf("save dir: %v", err)
+	}
+	if len(changed) != 2 || changed[0] != "new_group" || changed[1] != "old_group" {
+		t.Fatalf("got %v, want both the new and the pruned group", changed)
+	}
+}
+
+// A generated id differs on every run and is enforced against nothing, so the
+// case that records it declares IgnoreRows and its fixture must not be
+// rewritten for it.
+func TestSaveIgnoresRowsTheRecordDoesNotEnforce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	withJobID := func(id string) *conformance.Golden {
+		return &conformance.Golden{
+			Suite: "s",
+			Cases: []conformance.RecordedCase{{
+				Case: conformance.Case{Name: "a", Group: "g", Steps: []string{"CREATE INDEX ASYNC i ON t (a)"}, IgnoreRows: true},
+				Observations: []conformance.Observation{{
+					Outcome:    "ok",
+					CommandTag: "SELECT 1",
+					Columns:    []string{"job_id"},
+					Rows:       [][]string{{id}},
+				}},
+			}},
+		}
+	}
+
+	if changed, err := conformance.Save(path, withJobID("6putf6tsgndd5li4ks7biloseu")); err != nil || !changed {
+		t.Fatalf("first save: changed=%v err=%v", changed, err)
+	}
+	changed, err := conformance.Save(path, withJobID("jhbdh3rmgjfv5fh7vcwocotelq"))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if changed {
+		t.Error("a fixture was rewritten for a generated id the record ignores")
+	}
+}
+
+// A column that appears or disappears is enforced even when the rows are not,
+// so it must still rewrite the fixture.
+func TestSaveStillNoticesColumnsWhenRowsAreIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	withColumns := func(cols ...string) *conformance.Golden {
+		return &conformance.Golden{
+			Suite: "s",
+			Cases: []conformance.RecordedCase{{
+				Case:         conformance.Case{Name: "a", Group: "g", IgnoreRows: true},
+				Observations: []conformance.Observation{{Outcome: "ok", Columns: cols, Rows: [][]string{{"x"}}}},
+			}},
+		}
+	}
+
+	if _, err := conformance.Save(path, withColumns("job_id")); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	changed, err := conformance.Save(path, withColumns("job_id", "status"))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if !changed {
+		t.Error("a new column went unnoticed because the rows are ignored")
+	}
+}
+
+// Which transaction loses a conflict is a race, so a run that swapped the
+// winner and loser recorded the same thing and must not rewrite the fixture.
+func TestSaveIgnoresWhichSessionLostARace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	ok := conformance.Observation{Outcome: "ok", CommandTag: "COMMIT"}
+	lost := conformance.Observation{Outcome: "error", SQLState: "40001", Message: "change conflicts with another transaction (OC000)"}
+	wrote := conformance.Observation{Outcome: "ok", CommandTag: "UPDATE 1"}
+
+	race := func(first, second conformance.Observation) *conformance.Golden {
+		return &conformance.Golden{
+			Suite: "s",
+			Cases: []conformance.RecordedCase{{
+				Case: conformance.Case{Name: "a", Group: "g", ConflictRace: true},
+				SessionResults: [][]conformance.Observation{
+					{wrote, first},
+					{wrote, second},
+				},
+			}},
+		}
+	}
+
+	if changed, err := conformance.Save(path, race(lost, ok)); err != nil || !changed {
+		t.Fatalf("first save: changed=%v err=%v", changed, err)
+	}
+	changed, err := conformance.Save(path, race(ok, lost))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if changed {
+		t.Error("a fixture was rewritten because the race went the other way")
+	}
+
+	// Both transactions committing is a different answer, and must be recorded.
+	changed, err = conformance.Save(path, race(ok, ok))
+	if err != nil {
+		t.Fatalf("third save: %v", err)
+	}
+	if !changed {
+		t.Error("a conflict that stopped happening went unnoticed")
+	}
+}
+
+// Only the step the conflict surfaces at is a race; an earlier step is still
+// enforced session by session.
+func TestSaveNoticesAnEarlierStepInARaceCase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	lost := conformance.Observation{Outcome: "error", SQLState: "40001"}
+	ok := conformance.Observation{Outcome: "ok", CommandTag: "COMMIT"}
+
+	race := func(tag string) *conformance.Golden {
+		return &conformance.Golden{
+			Suite: "s",
+			Cases: []conformance.RecordedCase{{
+				Case: conformance.Case{Name: "a", Group: "g", ConflictRace: true},
+				SessionResults: [][]conformance.Observation{
+					{{Outcome: "ok", CommandTag: tag}, lost},
+					{{Outcome: "ok", CommandTag: "UPDATE 1"}, ok},
+				},
+			}},
+		}
+	}
+
+	if _, err := conformance.Save(path, race("UPDATE 1")); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	changed, err := conformance.Save(path, race("UPDATE 2"))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if !changed {
+		t.Error("a changed row count before the commit went unnoticed")
 	}
 }

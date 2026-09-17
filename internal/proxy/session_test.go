@@ -27,6 +27,9 @@ type testSession struct {
 	fe      *pgproto3.Frontend
 	be      *pgproto3.Backend
 	startup *pgproto3.StartupMessage
+	// savepointDone tracks the savepoint the adjudicator establishes once per
+	// transaction, which a real backend answers and a real client never sees.
+	savepointDone bool
 }
 
 // newTestSession wires a session between two in-memory pipes and completes the
@@ -117,6 +120,27 @@ func (ts *testSession) sendBackend(t *testing.T, msg pgproto3.BackendMessage) {
 	if err := ts.be.Flush(); err != nil {
 		t.Fatalf("flush backend: %v", err)
 	}
+}
+
+// serviceSavepoint answers the savepoint the adjudicator establishes when a
+// transaction opens. The client's own ReadyForQuery is withheld until it is in
+// place, so a test that opens a transaction has to answer it.
+func (ts *testSession) serviceSavepoint(t *testing.T, status byte) {
+	t.Helper()
+	if status == 'I' {
+		ts.savepointDone = false
+		return
+	}
+	if status != 'T' || ts.savepointDone {
+		return
+	}
+	ts.savepointDone = true
+
+	if got := ts.expectBackendQuery(t); got != "SAVEPOINT "+savepointName {
+		t.Fatalf("backend received %q want the adjudicator's savepoint", got)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("SAVEPOINT")})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
 }
 
 func (ts *testSession) receive(t *testing.T) pgproto3.BackendMessage {
@@ -259,6 +283,7 @@ func (ts *testSession) roundTrip(t *testing.T, sql, tag string, status byte) {
 	}
 
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
+	ts.serviceSavepoint(t, status)
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery to reach the client")
 	}
@@ -779,6 +804,7 @@ func (ts *testSession) complete(t *testing.T, tag string, status byte) {
 		t.Fatal("expected CommandComplete at the client")
 	}
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
+	ts.serviceSavepoint(t, status)
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery at the client")
 	}
@@ -836,6 +862,7 @@ func TestSessionAllowsPreparedAsyncIndexInTransaction(t *testing.T) {
 		t.Fatal("expected BEGIN forwarded to the backend")
 	}
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+	ts.serviceSavepoint(t, 'T')
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery after BEGIN")
 	}

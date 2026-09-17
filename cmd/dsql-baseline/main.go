@@ -106,10 +106,21 @@ func main() {
 	}
 
 	golden.Target = *label
-	if err := conformance.SaveDir(*outDir, golden); err != nil {
+	changed, err := conformance.SaveDir(*outDir, golden)
+	if err != nil {
 		fatal("save: %v", err)
 	}
-	fmt.Printf("\nWrote %d cases to %s (one fixture per group)\n", len(golden.Cases), *outDir)
+
+	// A fixture the cluster answered the same way is left alone, timestamp
+	// included, so the record's history shows the runs that found something.
+	// That this run happened is reported here, to be logged where runs are.
+	fmt.Printf("\nRecorded %d cases against %s\n", len(golden.Cases), *label)
+	if len(changed) == 0 {
+		fmt.Printf("Nothing changed; %s was left untouched\n", *outDir)
+		return
+	}
+	fmt.Printf("Changed %d fixture(s) in %s: %s\n",
+		len(changed), *outDir, strings.Join(changed, ", "))
 }
 
 func dsn(user, token, host string, port int, database, sslmode string) string {

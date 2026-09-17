@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -264,35 +266,140 @@ func summarize(observations []Observation) string {
 	return summary
 }
 
-// Save writes a golden record to path, creating parent directories.
-func Save(path string, golden *Golden) error {
+// Save writes a golden record to path, creating parent directories, and
+// reports whether it changed what was already there.
+//
+// A record whose content matches the one on disk is not written at all, and
+// keeps the date it was recorded on. Re-recording costs a run against a real
+// cluster and is done to find out whether the cluster still answers the same
+// way; when it does, the answer is that nothing changed, and a fixture whose
+// only difference is a new timestamp hides that in every diff it appears in.
+// That a run happened at all belongs in the progress log, not in the fixtures.
+func Save(path string, golden *Golden) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
+
+	if sameContent(path, golden) {
+		return false, nil
+	}
+
 	data, err := json.MarshalIndent(golden, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return true, os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+// sameContent reports whether the record on disk at path observed the same
+// thing as golden. Both are rendered through the same marshaller, so every
+// field counts, including ones added to the record later, without an equality
+// function to keep in step with the struct.
+func sameContent(path string, golden *Golden) bool {
+	existing, err := Load(path)
+	if err != nil {
+		return false
+	}
+	was, err := contentBytes(existing)
+	if err != nil {
+		return false
+	}
+	now, err := contentBytes(golden)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(was, now)
+}
+
+// contentBytes renders what a record holds the emulator to, rather than
+// everything it happened to see. A run observes things that differ every time
+// and are enforced against nothing: a generated job id, and which of two
+// transactions lost a race. Comparing those would put a diff in the record's
+// history for every run and bury the ones that found a real change.
+func contentBytes(golden *Golden) ([]byte, error) {
+	content := *golden
+	content.RecordedAt = time.Time{}
+	content.Cases = make([]RecordedCase, len(golden.Cases))
+	for i, c := range golden.Cases {
+		content.Cases[i] = enforcedCase(c)
+	}
+	return json.Marshal(&content)
+}
+
+// enforcedCase drops from a copy of a case whatever the comparison declines to
+// enforce, so change detection is exactly as sensitive as the replay it guards.
+func enforcedCase(c RecordedCase) RecordedCase {
+	if c.IgnoreRows {
+		c.Observations = withoutRows(c.Observations)
+		sessions := make([][]Observation, len(c.SessionResults))
+		for i, s := range c.SessionResults {
+			sessions[i] = withoutRows(s)
+		}
+		c.SessionResults = sessions
+	}
+	if c.ConflictRace {
+		c.SessionResults = withConflictFinalsPooled(c.SessionResults)
+	}
+	return c
+}
+
+// withoutRows clears what IgnoreRows waives: the rows themselves, and the
+// command tag when all it carries is how many there were.
+func withoutRows(obs []Observation) []Observation {
+	out := make([]Observation, len(obs))
+	for i, o := range obs {
+		o.Rows = nil
+		if isRowCountTag(o.CommandTag) {
+			o.CommandTag = ""
+		}
+		out[i] = o
+	}
+	return out
+}
+
+// withConflictFinalsPooled moves the step a conflict surfaces at out of its
+// session and into a sorted pool, so a ConflictRace case is compared on how
+// many transactions lost rather than on which of them did. Every earlier step
+// stays where it was, because those are enforced session by session.
+func withConflictFinalsPooled(sessions [][]Observation) [][]Observation {
+	pooled := make([][]Observation, 0, len(sessions)+1)
+	var finals []Observation
+	for _, s := range sessions {
+		if len(s) == 0 {
+			pooled = append(pooled, s)
+			continue
+		}
+		pooled = append(pooled, s[:len(s)-1])
+		finals = append(finals, s[len(s)-1])
+	}
+	sort.Slice(finals, func(i, j int) bool { return finalKey(finals[i]) < finalKey(finals[j]) })
+	return append(pooled, finals)
+}
+
+func finalKey(o Observation) string {
+	return strings.Join([]string{o.Outcome, o.SQLState, o.CommandTag, o.Message}, "\x00")
 }
 
 // SaveDir writes one fixture per case group into dir, replacing any fixtures
 // already there so that stale cases cannot linger. Grouping keeps each file
 // small as the suite grows; add finer groups to split further.
 //
+// It returns the groups whose content changed; a group that answered exactly as
+// it did before is left on disk untouched, timestamp included.
+//
 // A record with no cases is refused, and stale fixtures are pruned only once
 // every new one is on disk: a golden record costs a run against a real cluster,
 // so a failed save must never be able to leave the directory empty.
-func SaveDir(dir string, golden *Golden) error {
+func SaveDir(dir string, golden *Golden) ([]string, error) {
 	if golden == nil || len(golden.Cases) == 0 {
-		return errors.New("conformance: refusing to save a golden record with no cases")
+		return nil, errors.New("conformance: refusing to save a golden record with no cases")
 	}
 
 	var order []string
 	byGroup := make(map[string][]RecordedCase)
 	for _, c := range golden.Cases {
 		if c.Group == "" {
-			return fmt.Errorf("case %q has no group to save it under", c.Name)
+			return nil, fmt.Errorf("case %q has no group to save it under", c.Name)
 		}
 		if _, seen := byGroup[c.Group]; !seen {
 			order = append(order, c.Group)
@@ -301,33 +408,40 @@ func SaveDir(dir string, golden *Golden) error {
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 
+	var changed []string
 	written := make(map[string]bool, len(order))
 	for _, group := range order {
 		part := *golden
 		part.Cases = byGroup[group]
 		path := filepath.Join(dir, group+".json")
-		if err := Save(path, &part); err != nil {
-			return err
+		wrote, err := Save(path, &part)
+		if err != nil {
+			return nil, err
+		}
+		if wrote {
+			changed = append(changed, group)
 		}
 		written[path] = true
 	}
 
 	stale, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, path := range stale {
 		if written[path] {
 			continue
 		}
 		if err := os.Remove(path); err != nil {
-			return err
+			return nil, err
 		}
+		changed = append(changed, strings.TrimSuffix(filepath.Base(path), ".json"))
 	}
-	return nil
+	sort.Strings(changed)
+	return changed, nil
 }
 
 // Load reads a golden record.
