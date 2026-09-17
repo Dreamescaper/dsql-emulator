@@ -109,11 +109,28 @@ conflict never runs. What does work is bounding the wait.
    has already committed, `REPEATABLE READ` raises `40001` at the statement with
    no wait at all. Both codes mean the same thing: two transactions wanted the
    same rows.
-2. When a transaction opens, the emulator establishes a savepoint on it,
-   invisibly — the client's own `ReadyForQuery` is withheld until it is in
-   place. One per transaction is enough; a transaction that reaches the
-   savepoint is doomed, so the work it loses is discarded at `COMMIT` anyway,
-   and one subtransaction is cheaper than one per statement.
+2. Before the first statement that could conflict, the emulator establishes a
+   savepoint on the transaction, invisibly. One per transaction is enough; a
+   transaction that reaches the savepoint is doomed, so the work it loses is
+   discarded at `COMMIT` anyway, and one subtransaction is cheaper than one per
+   statement.
+
+   **Where it is written matters more than when.** The emulator and the client
+   write into the same stream, so a statement injected from the backend path —
+   when a `ReadyForQuery` arrives, say — lands *behind* anything a pipelining
+   client has already sent, and the exchange meant to hide the emulator's own
+   answer hides the client's instead. The savepoint is therefore written from
+   the frontend path, in the same goroutine and the same order as the client's
+   statements, and only when nothing is outstanding: no unanswered request, and
+   no extended-protocol batch the client's `Sync` has not closed. It also goes
+   ahead of the `Parse` rather than between the `Parse` and its `Bind`, because
+   a simple query destroys the unnamed prepared statement a `Bind` is about to
+   use.
+
+   When there is no such gap the transaction goes without a savepoint and its
+   conflicts are reported where PostgreSQL raises them. Npgsql defers its
+   `BEGIN` and sends it with the command that follows, so the first statement of
+   an Npgsql transaction is adjudicated that way and later ones normally.
 3. On either code, the emulator rolls back to that savepoint, which leaves the
    transaction usable and its snapshot intact, and answers the refused
    statement the way DSQL answers it: as if it had run. The row count comes

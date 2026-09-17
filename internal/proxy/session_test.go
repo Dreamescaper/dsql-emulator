@@ -27,9 +27,6 @@ type testSession struct {
 	fe      *pgproto3.Frontend
 	be      *pgproto3.Backend
 	startup *pgproto3.StartupMessage
-	// savepointDone tracks the savepoint the adjudicator establishes once per
-	// transaction, which a real backend answers and a real client never sees.
-	savepointDone bool
 }
 
 // newTestSession wires a session between two in-memory pipes and completes the
@@ -122,25 +119,20 @@ func (ts *testSession) sendBackend(t *testing.T, msg pgproto3.BackendMessage) {
 	}
 }
 
-// serviceSavepoint answers the savepoint the adjudicator establishes when a
-// transaction opens. The client's own ReadyForQuery is withheld until it is in
-// place, so a test that opens a transaction has to answer it.
-func (ts *testSession) serviceSavepoint(t *testing.T, status byte) {
+// nextBackend reads the next message the backend receives, answering the
+// adjudicator's savepoint first when that is what arrived. The savepoint is
+// written before the statement it protects, a real backend answers it the same
+// way, and a real client never sees it.
+func (ts *testSession) nextBackend(t *testing.T) pgproto3.FrontendMessage {
 	t.Helper()
-	if status == 'I' {
-		ts.savepointDone = false
-		return
-	}
-	if status != 'T' || ts.savepointDone {
-		return
-	}
-	ts.savepointDone = true
-
-	if got := ts.expectBackendQuery(t); got != "SAVEPOINT "+savepointName {
-		t.Fatalf("backend received %q want the adjudicator's savepoint", got)
+	msg := ts.receiveBackend(t)
+	query, ok := msg.(*pgproto3.Query)
+	if !ok || query.String != "SAVEPOINT "+savepointName {
+		return msg
 	}
 	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("SAVEPOINT")})
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+	return ts.receiveBackend(t)
 }
 
 func (ts *testSession) receive(t *testing.T) pgproto3.BackendMessage {
@@ -283,7 +275,6 @@ func (ts *testSession) roundTrip(t *testing.T, sql, tag string, status byte) {
 	}
 
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
-	ts.serviceSavepoint(t, status)
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery to reach the client")
 	}
@@ -309,9 +300,21 @@ func (ts *testSession) expectRejectedQuery(t *testing.T, sql, code string) byte 
 	return rfq.TxStatus
 }
 
-func (ts *testSession) expectBackendQuery(t *testing.T) string {
+// expectBackendQueryRaw reads the next backend message as a Query without
+// servicing an adjudicator savepoint, for a test that is about the savepoint.
+func (ts *testSession) expectBackendQueryRaw(t *testing.T) string {
 	t.Helper()
 	msg := ts.receiveBackend(t)
+	q, ok := msg.(*pgproto3.Query)
+	if !ok {
+		t.Fatalf("expected Query at the backend, got %T", msg)
+	}
+	return q.String
+}
+
+func (ts *testSession) expectBackendQuery(t *testing.T) string {
+	t.Helper()
+	msg := ts.nextBackend(t)
 	q, ok := msg.(*pgproto3.Query)
 	if !ok {
 		t.Fatalf("expected Query at the backend, got %T", msg)
@@ -767,7 +770,7 @@ func TestSessionRejectsUnsupportedIsolation(t *testing.T) {
 func (ts *testSession) parse(t *testing.T, name, sql string) {
 	t.Helper()
 	ts.send(t, &pgproto3.Parse{Name: name, Query: sql})
-	if _, ok := ts.receiveBackend(t).(*pgproto3.Parse); !ok {
+	if _, ok := ts.nextBackend(t).(*pgproto3.Parse); !ok {
 		t.Fatal("expected Parse at the backend")
 	}
 	ts.sendBackend(t, &pgproto3.ParseComplete{})
@@ -780,7 +783,7 @@ func (ts *testSession) parse(t *testing.T, name, sql string) {
 func (ts *testSession) bind(t *testing.T, portal, statement string) {
 	t.Helper()
 	ts.send(t, &pgproto3.Bind{DestinationPortal: portal, PreparedStatement: statement})
-	if _, ok := ts.receiveBackend(t).(*pgproto3.Bind); !ok {
+	if _, ok := ts.nextBackend(t).(*pgproto3.Bind); !ok {
 		t.Fatal("expected Bind at the backend")
 	}
 	ts.sendBackend(t, &pgproto3.BindComplete{})
@@ -804,7 +807,6 @@ func (ts *testSession) complete(t *testing.T, tag string, status byte) {
 		t.Fatal("expected CommandComplete at the client")
 	}
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: status})
-	ts.serviceSavepoint(t, status)
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery at the client")
 	}
@@ -862,7 +864,6 @@ func TestSessionAllowsPreparedAsyncIndexInTransaction(t *testing.T) {
 		t.Fatal("expected BEGIN forwarded to the backend")
 	}
 	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
-	ts.serviceSavepoint(t, 'T')
 	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
 		t.Fatal("expected ReadyForQuery after BEGIN")
 	}

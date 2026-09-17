@@ -260,7 +260,7 @@ func TestSessionRunsAParameterisedShadowWithTheBoundValues(t *testing.T) {
 		PreparedStatement: "s1",
 		Parameters:        [][]byte{[]byte("new-value"), []byte("42")},
 	})
-	if _, ok := ts.receiveBackend(t).(*pgproto3.Bind); !ok {
+	if _, ok := ts.nextBackend(t).(*pgproto3.Bind); !ok {
 		t.Fatal("expected Bind at the backend")
 	}
 	ts.sendBackend(t, &pgproto3.BindComplete{})
@@ -379,5 +379,95 @@ func TestSessionReportsTheConflictWhenTheShadowFails(t *testing.T) {
 	}
 	if rfq.TxStatus != 'E' {
 		t.Fatalf("got tx status %q want E", rfq.TxStatus)
+	}
+}
+
+// A client that pipelines sends its next batch before the previous one is
+// answered, which is what Npgsql does: it defers BEGIN and sends it with the
+// first command. The emulator writes into the same stream, so anything it
+// injects after the fact lands behind those messages, and the hidden exchange
+// that was meant to swallow its own answer swallows the client's instead.
+// Nothing may be written into that gap.
+func TestSessionWritesNothingIntoAPipelinedBatch(t *testing.T) {
+	ts := newTestSession(t)
+
+	// Both batches reach the backend before either is answered.
+	ts.send(t, &pgproto3.Parse{Name: "b", Query: "BEGIN"})
+	assertBackend[*pgproto3.Parse](t, ts, "BEGIN Parse")
+	ts.send(t, &pgproto3.Bind{DestinationPortal: "pb", PreparedStatement: "b"})
+	assertBackend[*pgproto3.Bind](t, ts, "BEGIN Bind")
+	ts.send(t, &pgproto3.Execute{Portal: "pb"})
+	assertBackend[*pgproto3.Execute](t, ts, "BEGIN Execute")
+	ts.send(t, &pgproto3.Sync{})
+	assertBackend[*pgproto3.Sync](t, ts, "BEGIN Sync")
+
+	ts.send(t, &pgproto3.Parse{Name: "u", Query: "UPDATE t SET v = 'x' WHERE id = 1"})
+	assertBackend[*pgproto3.Parse](t, ts, "UPDATE Parse")
+	ts.send(t, &pgproto3.Bind{DestinationPortal: "pu", PreparedStatement: "u"})
+	assertBackend[*pgproto3.Bind](t, ts, "UPDATE Bind")
+	ts.send(t, &pgproto3.Execute{Portal: "pu"})
+	assertBackend[*pgproto3.Execute](t, ts, "UPDATE Execute")
+	ts.send(t, &pgproto3.Sync{})
+	assertBackend[*pgproto3.Sync](t, ts, "UPDATE Sync")
+
+	// The backend answers both batches in order. Every message must reach the
+	// client, in order, with nothing swallowed and nothing added.
+	answer := []pgproto3.BackendMessage{
+		&pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+		&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")},
+		&pgproto3.ReadyForQuery{TxStatus: 'T'},
+		&pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+		&pgproto3.ErrorResponse{Severity: "ERROR", Code: "42P01", Message: `relation "t" does not exist`},
+		&pgproto3.ReadyForQuery{TxStatus: 'E'},
+	}
+	for _, want := range answer {
+		ts.sendBackend(t, want)
+		got := ts.receive(t)
+		if gotType, wantType := fmt.Sprintf("%T", got), fmt.Sprintf("%T", want); gotType != wantType {
+			t.Fatalf("client received %s where the backend sent %s", gotType, wantType)
+		}
+		if er, ok := got.(*pgproto3.ErrorResponse); ok && er.Code != "42P01" {
+			t.Fatalf("client received %s, want the backend's own 42P01", er.Code)
+		}
+	}
+}
+
+// assertBackend reads the next backend message and requires it to be the
+// client's own, so an injected statement fails the test rather than being
+// serviced by the harness.
+func assertBackend[T pgproto3.FrontendMessage](t *testing.T, ts *testSession, what string) {
+	t.Helper()
+	msg := ts.receiveBackend(t)
+	if _, ok := msg.(T); !ok {
+		if q, isQuery := msg.(*pgproto3.Query); isQuery {
+			t.Fatalf("the emulator wrote %q into a pipelined batch, before the client's %s", q.String, what)
+		}
+		t.Fatalf("backend received %T, want the client's %s", msg, what)
+	}
+}
+
+// With nothing outstanding the savepoint is established, and it goes ahead of
+// the Parse rather than between it and the Bind, because a simple query
+// destroys the unnamed prepared statement a Bind is about to use.
+func TestSessionEstablishesTheSavepointAheadOfTheParse(t *testing.T) {
+	ts := newTestSession(t)
+	ts.roundTrip(t, "BEGIN", "BEGIN", 'T')
+
+	ts.send(t, &pgproto3.Parse{Name: "", Query: "UPDATE t SET v = 'x' WHERE id = 1"})
+
+	if got := ts.expectBackendQueryRaw(t); got != "SAVEPOINT "+savepointName {
+		t.Fatalf("backend received %q first, want the savepoint before the Parse", got)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("SAVEPOINT")})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Parse); !ok {
+		t.Fatal("expected the client's Parse after the savepoint")
+	}
+
+	// The savepoint is established once, so a second statement adds nothing.
+	ts.send(t, &pgproto3.Parse{Name: "", Query: "UPDATE t SET v = 'y' WHERE id = 2"})
+	if _, ok := ts.receiveBackend(t).(*pgproto3.Parse); !ok {
+		t.Fatal("a second savepoint was written for the same transaction")
 	}
 }

@@ -107,6 +107,18 @@ type session struct {
 	// ReadyForQuery that ends its failed exchange.
 	occInFlight *inFlight
 	occRepair   *inFlight
+	// extendedBatchOpen reports that the client has sent extended-protocol
+	// messages that its Sync has not closed yet. A simple query written into
+	// that gap would destroy the unnamed prepared statement the batch is
+	// building, so nothing may be injected while it is set.
+	extendedBatchOpen bool
+	// pendingExchanges is how many requests the upstream has not answered yet,
+	// counting one per simple Query and one per Sync. The emulator writes into
+	// the same stream as the client, so it may only run a statement of its own
+	// when nothing is outstanding: a client that pipelines -- Npgsql defers its
+	// BEGIN and sends it with the first command -- has already put messages
+	// ahead of anything injected after the fact.
+	pendingExchanges int
 
 	// job, when set, is the result the emulator synthesizes for the
 	// asynchronous statement in flight; described records whether the client's
@@ -218,6 +230,9 @@ func (s *session) pumpBackend() {
 		}
 		s.fromUpstream.Add(int64(len(msg.Raw)))
 
+		if msg.Type == 'Z' {
+			s.endExchange()
+		}
 		if s.consumeHidden(msg) {
 			continue
 		}
@@ -262,10 +277,7 @@ func (s *session) pumpBackend() {
 					continue
 				}
 				s.setStateTxStatus(rfq.TxStatus)
-				if s.noteTxStatus(rfq.TxStatus) {
-					s.establishSavepoint(msg.Raw)
-					continue
-				}
+				s.noteTxStatus(rfq.TxStatus)
 			}
 		case 'C':
 			if encoded, ok := s.rewriteCommandTag(msg); ok {
@@ -303,6 +315,7 @@ func (s *session) pumpFrontend() {
 
 		if msg.Type == 'S' {
 			s.handleSync(msg)
+			s.noteBatchState(msg.Type)
 			continue
 		}
 		if s.droppingUntilSync() {
@@ -323,6 +336,7 @@ func (s *session) pumpFrontend() {
 		default:
 			s.forward(msg)
 		}
+		s.noteBatchState(msg.Type)
 	}
 }
 
@@ -391,13 +405,13 @@ func (s *session) handleQuery(msg wire.Message) {
 		}
 		s.resetOcc()
 	} else if s.tracker.Stats().InTxn {
-		s.setInFlight(occ.Analyze(query.String), nil)
+		s.armAdjudicator(occ.Analyze(query.String), nil)
 	}
 
 	if rewritten := s.rewriteSQL(query.String); rewritten != "" {
 		query.String = rewritten
 		if encoded, err := query.Encode(nil); err == nil {
-			_ = s.writeUpstream(encoded)
+			_ = s.writeUpstreamExchange(encoded)
 			return
 		}
 	}
@@ -459,10 +473,17 @@ func (s *session) handleParse(msg wire.Message) {
 		}
 	}
 
+	intent := occ.Analyze(parse.Query)
+	if intent != nil && s.tracker.Stats().InTxn {
+		// Before the Parse, not before the Bind: the savepoint is a simple
+		// query, and one of those destroys the unnamed prepared statement the
+		// Bind is about to use.
+		s.establishSavepoint()
+	}
 	s.statements[parse.Name] = statementInfo{
 		kinds:  result.Kinds,
 		tables: result.Tables,
-		intent: occ.Analyze(parse.Query),
+		intent: intent,
 	}
 	s.forward(msg)
 }
@@ -510,7 +531,7 @@ func (s *session) handleBind(msg wire.Message) {
 		}
 		s.resetOcc()
 	} else if s.tracker.Stats().InTxn {
-		s.setInFlight(info.intent, bind)
+		s.armAdjudicator(info.intent, bind)
 	}
 	if info.jobID != "" {
 		s.restoreJob(info.jobID)
@@ -597,7 +618,7 @@ func (s *session) beginFailure(f txnFailure) {
 	s.txnAborted = f.status == 'E'
 	s.stateMu.Unlock()
 
-	_ = s.writeUpstream(f.statement)
+	_ = s.writeUpstreamExchange(f.statement)
 }
 
 // deferFailure waits for the client's Sync, because the upstream is still
@@ -883,6 +904,12 @@ func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMe
 		s.forward(msg)
 		return
 	}
+	// A Query draws a ReadyForQuery of its own; a Parse waits for the Sync that
+	// the client will send, which is counted when it is forwarded.
+	if _, isQuery := frontend.(*pgproto3.Query); isQuery {
+		_ = s.writeUpstreamExchange(encoded)
+		return
+	}
 	_ = s.writeUpstream(encoded)
 }
 
@@ -1023,9 +1050,60 @@ func (s *session) sendError(code, message, rule string) {
 }
 
 func (s *session) forward(msg wire.Message) {
+	// A simple Query and a Sync each draw exactly one ReadyForQuery.
+	if msg.Type == 'Q' || msg.Type == 'S' {
+		s.beginExchange()
+	}
 	if err := s.writeUpstream(msg.Raw); err != nil {
 		s.close()
 	}
+}
+
+// noteBatchState tracks whether the client is part-way through an
+// extended-protocol batch, which its Sync closes.
+func (s *session) noteBatchState(msgType byte) {
+	switch msgType {
+	case 'P', 'B', 'D', 'E', 'C', 'H':
+		s.stateMu.Lock()
+		s.extendedBatchOpen = true
+		s.stateMu.Unlock()
+	case 'S', 'Q':
+		s.stateMu.Lock()
+		s.extendedBatchOpen = false
+		s.stateMu.Unlock()
+	}
+}
+
+// beginExchange records a request the upstream has yet to answer.
+func (s *session) beginExchange() {
+	s.stateMu.Lock()
+	s.pendingExchanges++
+	s.stateMu.Unlock()
+}
+
+// endExchange records the ReadyForQuery that answered one.
+func (s *session) endExchange() {
+	s.stateMu.Lock()
+	if s.pendingExchanges > 0 {
+		s.pendingExchanges--
+	}
+	s.stateMu.Unlock()
+}
+
+// upstreamSettled reports whether the upstream has answered everything asked of
+// it but the given number of requests, which is what makes it safe to write a
+// statement of the emulator's own into the stream.
+func (s *session) upstreamSettled(outstanding int) bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.pendingExchanges <= outstanding
+}
+
+// writeUpstreamExchange sends a statement of the emulator's own, which draws a
+// ReadyForQuery like any other request.
+func (s *session) writeUpstreamExchange(b []byte) error {
+	s.beginExchange()
+	return s.writeUpstream(b)
 }
 
 func (s *session) writeUpstream(b []byte) error {

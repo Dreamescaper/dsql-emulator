@@ -7,7 +7,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 ## Current status
 
 **Every milestone is done, the record is fresh, and the verification backlog is
-empty.** Every refusal the record
+empty.** A pipelining client such as Npgsql is no longer disturbed by the
+adjudicator's savepoint; see issue #1. Every refusal the record
 holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
@@ -50,6 +51,90 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Fixed: the adjudicator's savepoint corrupted a pipelining client's stream (2026-09-17)
+
+Reported as [#1](https://github.com/Dreamescaper/dsql-emulator/issues/1): on
+v0.2.0 a statement that errors inside a transaction answered Npgsql with a
+`CommandComplete` where the protocol requires `ParseComplete`, which fails the
+connection. An entire EF Core suite fails against v0.2.0 and passes against
+v0.1.1.
+
+**Root cause.** The savepoint the adjudicator rolls back to was written from the
+*backend* path, when the `BEGIN`'s `ReadyForQuery` arrived. The emulator and the
+client write into the same upstream stream, and Npgsql defers its `BEGIN` and
+sends it together with the command that follows — so by the time that
+`ReadyForQuery` came back, the client's next batch was already upstream, ahead of
+anything injected after the fact. The hidden exchange meant to swallow the
+savepoint's own answer swallowed the client's instead, and the savepoint then ran
+against a transaction the swallowed error had already aborted. What the client
+saw next was whatever fell out of the mismatch.
+
+Reproduced with a real Npgsql client before anything was changed, and the debug
+log named it directly: `savepoint refused; conflicts stay where postgresql
+raises them`.
+
+**The fix is about where a statement is written, not when.** The savepoint is
+now written from the frontend path, in the same goroutine and the same order as
+the client's own statements, and only into a gap that exists:
+
+- nothing outstanding — the emulator counts requests it has sent and
+  `ReadyForQuery`s it has received, one per simple query and one per `Sync`;
+- no extended-protocol batch open — the client's `Sync` closes one, and a simple
+  query written mid-batch is not a gap at all;
+- ahead of the `Parse`, never between a `Parse` and its `Bind`, because a simple
+  query destroys the unnamed prepared statement the `Bind` is about to use.
+  Getting this wrong produced `26000 unnamed prepared statement does not exist`
+  in the middle of the work, which is how the constraint was found.
+
+With no gap, the transaction goes without a savepoint and its conflicts are
+reported where PostgreSQL raises them, with DSQL's SQLSTATE and wording. That is
+the first statement of an Npgsql transaction; later ones are adjudicated
+normally.
+
+Files: `internal/proxy/session.go`, `internal/proxy/adjudicator.go`,
+`internal/proxy/session_test.go`, `internal/proxy/adjudicator_test.go`,
+`test/integration/pipeline_test.go` (new), `README.md`, `docs/PLAN.md`.
+
+**Verification.**
+
+`TestSessionWritesNothingIntoAPipelinedBatch` drives two batches to the backend
+before either is answered and requires every backend message to reach the client
+unchanged. It was run against the released v0.2.0 in a worktree, where it fails,
+so it is a regression test rather than a restatement of the fix.
+`TestSessionEstablishesTheSavepointAheadOfTheParse` pins the position, and
+`TestPipelinedClientIsNotDisturbed` covers it end to end with pgx's pipeline
+mode.
+
+With a real Npgsql client, against the fix:
+
+```
+1. error in txn -> 42P01 OK
+2. first statement in txn: conflict at STATEMENT 40001
+3. later statement in txn: conflict at COMMIT 40001 — OK
+```
+
+```
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.331s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.689s
+
+$ go test -race -count=1 ./...
+(no races)
+```
+
+**A second bug the fix surfaced.** The conformance suite went red partway
+through: every conflict was reported at the statement. The batch-open flag was
+never cleared, because `pumpFrontend` handles `Sync` in an early branch that
+`continue`s before the bookkeeping at the end of the loop. Worth recording
+because the unit tests stayed green through it — only the container-backed
+conformance run, which drives a real pgx client, caught it.
+
+**Known gap.** A conflict on the first statement of a pipelined transaction is
+reported at the statement. Closing it means waiting for the upstream to settle
+before forwarding that statement, which puts a blocking wait on the frontend
+path; not a change to make inside a hotfix.
 
 ### Injection rules are validated, and the ruleset package has tests (2026-09-17)
 
@@ -2014,6 +2099,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Inject only from the frontend path, and only into a real gap | Two goroutines write to the upstream, so ordering between an injected statement and a client's is otherwise undefined. The frontend path is the only place that can know where an injected statement falls in the stream. |
+| 2026-09-17 | Skip the savepoint rather than wait for a gap | A pipelining client leaves none at the first statement of a transaction. Waiting would block the frontend path on the backend draining, which is a deadlock surface to add in a hotfix; skipping degrades to reporting the conflict where PostgreSQL raises it. |
 | 2026-09-17 | `occ_multirow_predicate` is a known gap, not a bug to fix | Failing both sides of a conflict needs DSQL's adjudication logic; the emulator borrows PostgreSQL's locks, where the first writer can always commit. Matching it would mean replacing the premise of the OCC layer for one recorded case. |
 | 2026-09-17 | A parent row and a child table per referential action | The actions differ in what they write to the child, so sharing a parent would have let one probe's delete disturb another's. |
 | 2026-09-17 | Marked the new pairs `ConflictRace` before knowing whether they conflict | It asserts how many transactions lost rather than which, so it is correct whichever way the recording goes, and wrong only if the count itself differs -- which is the thing worth catching. |
@@ -2090,6 +2177,11 @@ Every milestone is done, the adjudicator included, and PLAN.md's verification
 backlog is empty. What remains:
 
 ### 1. Smaller items
+
+- A conflict on the first statement of a pipelined transaction is reported at
+  the statement rather than at `COMMIT`, because the client leaves no gap to
+  establish the savepoint in. Closing it means waiting for the upstream to
+  settle on the frontend path.
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).

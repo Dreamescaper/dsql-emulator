@@ -103,6 +103,37 @@ func (s *session) setHidden(h *hiddenExchange) {
 	s.stateMu.Unlock()
 }
 
+// armAdjudicator prepares the transaction to have this statement's conflict
+// deferred to COMMIT: the savepoint that a repair rolls back to is established
+// first, ahead of the statement itself, and the statement is remembered only if
+// that succeeded. A statement the emulator could not answer for needs neither.
+func (s *session) armAdjudicator(intent *occ.Intent, bind *pgproto3.Bind) {
+	if intent == nil || !s.savepointReady(bind) {
+		s.setInFlight(nil, nil)
+		return
+	}
+	s.setInFlight(intent, bind)
+}
+
+// savepointReady reports whether the transaction carries the savepoint a repair
+// rolls back to, establishing one when that can still be done safely.
+func (s *session) savepointReady(bind *pgproto3.Bind) bool {
+	s.stateMu.Lock()
+	has := s.occSavepoint
+	s.stateMu.Unlock()
+	if has {
+		return true
+	}
+	// A simple query destroys the unnamed prepared statement, so one cannot be
+	// written between a client's Parse and the Bind that uses it. The Parse is
+	// where that statement's savepoint is established instead; a named
+	// statement is unaffected, and a simple query has no Parse to come between.
+	if bind != nil && bind.PreparedStatement == "" {
+		return false
+	}
+	return s.establishSavepoint()
+}
+
 // setInFlight records what the statement now executing would report if the
 // backend refuses it a lock. A nil intent means the emulator cannot reproduce
 // the answer, so a conflict is reported where PostgreSQL raises it. bind is the
@@ -141,45 +172,64 @@ func (s *session) occAdjudicated() bool {
 	return s.occDoomed
 }
 
-// noteTxStatus tracks the transaction the backend reports and answers whether a
-// savepoint has to be established for it. The savepoint is dropped only when
-// the transaction ends: an aborted transaction still holds the one it has, and
-// SAVEPOINT cannot run in it anyway.
-func (s *session) noteTxStatus(status byte) bool {
+// noteTxStatus forgets what belonged to a transaction that has ended. An
+// aborted transaction still holds its savepoint, and cannot take a new one.
+func (s *session) noteTxStatus(status byte) {
+	if status != 'I' {
+		return
+	}
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	if status == 'I' {
-		s.occSavepoint = false
-		s.occDoomed = false
-		s.occInFlight = nil
-		return false
-	}
-	if status == 'T' && !s.occSavepoint {
-		s.occSavepoint = true
-		return true
-	}
-	return false
+	s.occSavepoint = false
+	s.occDoomed = false
+	s.occInFlight = nil
+	s.stateMu.Unlock()
 }
 
-// establishSavepoint runs the transaction's savepoint before the client is told
-// its own statement finished, so the adjudicator has somewhere to roll back to.
-func (s *session) establishSavepoint(heldRFQ []byte) {
+// establishSavepoint gives the adjudicator somewhere to roll back to, before
+// the statement that might need it is forwarded.
+//
+// It is written from the frontend path, in the same goroutine and the same
+// order as the client's own statements, because that is the only way to know
+// where its answer falls in the stream. Injecting it when a ReadyForQuery
+// arrives instead would put it behind anything a pipelining client had already
+// sent, and its hidden exchange would then swallow the client's answer.
+//
+// It reports whether the transaction now carries one.
+func (s *session) establishSavepoint() bool {
+	s.stateMu.Lock()
+	switch {
+	case s.occSavepoint:
+		s.stateMu.Unlock()
+		return true
+	case s.pendingExchanges > 0 || s.extendedBatchOpen:
+		// The client is pipelining -- either with answers still outstanding, or
+		// part-way through a batch its Sync has not closed -- so there is no gap
+		// to write into. The transaction goes without, and a conflict in it is
+		// reported where PostgreSQL raises it.
+		s.stateMu.Unlock()
+		return false
+	}
+	s.occSavepoint = true
+	s.stateMu.Unlock()
+
 	var failed bool
 	s.setHidden(&hiddenExchange{
 		consume: consumeUntilReady(&failed),
 		finish: func() {
-			if failed {
-				s.stateMu.Lock()
-				s.occSavepoint = false
-				s.stateMu.Unlock()
-				s.logger.Debug("savepoint refused; conflicts stay where postgresql raises them")
+			if !failed {
+				return
 			}
-			s.writeClient(heldRFQ)
+			s.stateMu.Lock()
+			s.occSavepoint = false
+			s.stateMu.Unlock()
+			s.logger.Debug("savepoint refused; conflicts stay where postgresql raises them")
 		},
 	})
-	if err := s.writeUpstream(savepointQuery); err != nil {
+	if err := s.writeUpstreamExchange(savepointQuery); err != nil {
 		s.close()
+		return false
 	}
+	return true
 }
 
 // consumeUntilReady swallows an exchange through its ReadyForQuery, recording
@@ -204,9 +254,11 @@ func (s *session) occIntercept(msg wire.Message) bool {
 
 	s.stateMu.Lock()
 	flight := s.occInFlight
-	// Outside a transaction there is nothing to defer the failure to, and
-	// without a savepoint there is no way back to a usable one.
-	ready := s.occSavepoint && s.txStatus == 'T' && flight != nil
+	// Outside a transaction there is nothing to defer the failure to; without a
+	// savepoint there is no way back to a usable one; and with more than the
+	// failed request outstanding the client has pipelined past it, so there is
+	// no gap to run the repair in.
+	ready := s.occSavepoint && s.txStatus == 'T' && flight != nil && s.pendingExchanges <= 1
 	if ready {
 		s.occRepair = flight
 		s.occInFlight = nil
@@ -257,7 +309,7 @@ func (s *session) startRepair() bool {
 			s.runShadow(repair)
 		},
 	})
-	if err := s.writeUpstream(rollbackToQuery); err != nil {
+	if err := s.writeUpstreamExchange(rollbackToQuery); err != nil {
 		s.close()
 	}
 	return true
@@ -309,9 +361,9 @@ func (s *session) runCountShadow(repair *inFlight) {
 	// whatever the client's own statement was bound for.
 	var err error
 	if len(values) > 0 {
-		err = s.writeUpstream(extendedQuery(repair.intent.Shadow, values, formats, nil))
+		err = s.writeUpstreamExchange(extendedQuery(repair.intent.Shadow, values, formats, nil))
 	} else {
-		err = s.writeUpstream(simpleQuery(repair.intent.Shadow))
+		err = s.writeUpstreamExchange(simpleQuery(repair.intent.Shadow))
 	}
 	if err != nil {
 		s.close()
@@ -357,9 +409,9 @@ func (s *session) runRowsetShadow(repair *inFlight) {
 
 	var err error
 	if repair.extended {
-		err = s.writeUpstream(extendedQuery(repair.intent.Shadow, values, formats, repair.formats))
+		err = s.writeUpstreamExchange(extendedQuery(repair.intent.Shadow, values, formats, repair.formats))
 	} else {
-		err = s.writeUpstream(simpleQuery(repair.intent.Shadow))
+		err = s.writeUpstreamExchange(simpleQuery(repair.intent.Shadow))
 	}
 	if err != nil {
 		s.close()
