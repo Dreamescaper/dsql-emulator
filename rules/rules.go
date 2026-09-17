@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -107,7 +108,8 @@ type OCC struct {
 }
 
 // OCCInjection fails a transaction at COMMIT when it has touched one of the
-// listed tables, every Nth time. With no tables it matches any transaction.
+// listed tables, every Nth time. With no tables it matches any transaction, and
+// with no Every, or 1, it fails every commit it matches.
 type OCCInjection struct {
 	ID     string   `yaml:"id"`
 	Tables []string `yaml:"tables"`
@@ -156,6 +158,34 @@ func (rs *Ruleset) validate() error {
 			return fmt.Errorf("ruleset: rule %q has no message", r.ID)
 		}
 		seen[r.ID] = true
+	}
+	return rs.OCC.validate()
+}
+
+// validate checks the conflict settings. An injection rule that is quietly
+// ignored is worse than one that is refused: the transaction it was meant to
+// fail commits, and a retry loop under test never runs.
+func (o OCC) validate() error {
+	if o.LockTimeoutMS < 0 {
+		return fmt.Errorf("ruleset: occ.lock_timeout_ms is %d; use 0 to let the backend wait", o.LockTimeoutMS)
+	}
+
+	seen := make(map[string]bool, len(o.Inject))
+	for i, inj := range o.Inject {
+		switch {
+		case inj.ID == "":
+			return fmt.Errorf("ruleset: occ injection %d has no id", i)
+		case seen[inj.ID]:
+			return fmt.Errorf("ruleset: duplicate occ injection id %q", inj.ID)
+		case inj.Every < 0:
+			return fmt.Errorf("ruleset: occ injection %q has every %d; use 1 for every commit", inj.ID, inj.Every)
+		}
+		for _, table := range inj.Tables {
+			if strings.TrimSpace(table) == "" {
+				return fmt.Errorf("ruleset: occ injection %q names an empty table", inj.ID)
+			}
+		}
+		seen[inj.ID] = true
 	}
 	return nil
 }

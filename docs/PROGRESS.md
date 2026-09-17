@@ -51,6 +51,41 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Injection rules are validated, and the ruleset package has tests (2026-09-17)
+
+`occ.inject` entries were the one part of the ruleset nothing checked. An empty
+or duplicate `id`, a negative `every`, or a blank table name loaded without
+complaint and then never fired — which is the worst way for this particular
+feature to fail, because the transaction the rule was meant to fail commits
+instead and the retry loop under test never runs. The same was true of a
+negative `lock_timeout_ms`, which was silently read as "let the backend wait".
+
+All of those are now refused at load, alongside the checks the `unsupported`
+rules already had.
+
+The `rules` package had no tests at all, so the loader and the validator were
+unpinned. It has them now, including the invariant that the embedded ruleset
+loads and that its `lock_timeout_ms` is set — without that the adjudicator waits
+for locks and every conflict lands in the wrong place, which nothing else would
+have caught.
+
+Files: `rules/rules.go`, `rules/rules_test.go` (new), `docs/PLAN.md`.
+
+**Verification.**
+
+```
+$ go test ./rules/ -v
+--- PASS: TestDefaultRulesetIsValid
+--- PASS: TestLoadRefusesInjectionRulesThatWouldNeverFire   (5 subtests)
+--- PASS: TestLoadAcceptsUsableInjectionRules
+--- PASS: TestLoadRefusesIncompleteRules                    (5 subtests)
+
+$ make build && make vet && make test && make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/rules	0.497s
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	22.577s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	24.920s
+```
+
 ### Recorded the conflict probes: both questions answered, one divergence found (2026-09-17)
 
 Ran `dsql-baseline` against the cluster in `eu-central-1`. 222 cases recorded,
@@ -2058,8 +2093,6 @@ backlog is empty. What remains:
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).
-- `occ.inject` rules get no validation: an empty or duplicate `id`, or a
-  negative `every`, loads silently where an `unsupported` rule would not.
 - One conformance run took ~18s instead of ~1s and never reproduced; worth a
   glance if it returns.
 - `occ_multirow_predicate` is a known gap on one recording. A second run would

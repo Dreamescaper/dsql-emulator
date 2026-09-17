@@ -402,8 +402,17 @@ occ:
   key_columns_only_for: [fk_key_share]
   error: "change conflicts with another transaction (OC000)"
   sqlstate: "40001"
+  lock_timeout_ms: 50
   inject: []
 ```
+
+The ruleset is refused rather than loaded when a rule could not do anything: a
+rule with no id, code or message, a duplicate id, and the same for an `occ.inject`
+entry, whose id must be present and unique, whose `every` may not be negative,
+and whose tables may not be blank. An injection rule that is quietly ignored is
+worse than one that is refused, because the transaction it was meant to fail
+commits and the retry loop under test never runs. Unknown keys are refused too,
+so a misspelled setting is reported rather than defaulted.
 
 Available predicates: `relpersistence`, `column_type`, `column_array`,
 `objtype`, `txn_kind`, `set_name`, `show_name`, `language_not`,
