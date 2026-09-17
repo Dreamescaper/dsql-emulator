@@ -6,7 +6,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, and the record is fresh.** Every refusal the record
+**Every milestone is done, the record is fresh, and the verification backlog is
+empty.** Every refusal the record
 holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
@@ -49,6 +50,67 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Recorded the conflict probes: both questions answered, one divergence found (2026-09-17)
+
+Ran `dsql-baseline` against the cluster in `eu-central-1`. 222 cases recorded,
+48 objects dropped, no cleanup skips; the referential-action fixtures applied
+cleanly, so the setup risk flagged last time did not materialise.
+
+**Referential actions conflict, all three the same way.** `ON DELETE CASCADE`,
+`SET NULL` and `SET DEFAULT` each fail the parent delete against a concurrent
+write to the child the action would rewrite. The emulator matches all three,
+because PostgreSQL's action takes the child's row lock and the adjudicator reads
+that as the conflict it is.
+
+**A multi-row conflict can leave no winner.** Both sessions updated the same
+three rows behind `k = 1`. DSQL reported `UPDATE 3` on both sides — the row
+count a loser reports is the true count under its own snapshot, which is what
+the shadow computes — and then **failed both transactions**. The emulator fails
+one. It cannot do otherwise: it adjudicates on the backend's row locks, so
+whichever transaction takes them first is by construction able to commit.
+
+That is recorded as a `KnownGap` rather than chased. Reproducing it means
+modelling DSQL's adjudication instead of borrowing PostgreSQL's, which is the
+premise the whole layer rests on. It is also one sample: whether DSQL always
+fails both, or did so because the two commits landed together, is not known.
+The probe is what makes the question askable, and the gap is now visible in
+every conformance run rather than assumed away.
+
+**The run also caught a bug in the change detection.** `multi_statement` was
+rewritten for nothing but a regenerated job id, in a case marked `IgnoreRows`.
+The waiver added on 2026-09-17 clears `Observation.Rows`, but a multi-statement
+step keeps its rows in `Observation.Results[n].Rows`, which the waiver was never
+taught about when `Results` was added later the same day. Fixed, with a test,
+and the fixture restored to what the fixed code would have left.
+
+Files: `internal/conformance/suite.go`, `internal/conformance/record.go`,
+`internal/conformance/conformance_test.go`,
+`test/conformance/golden/occ_conflict.json`, `docs/PLAN.md`, `README.md`.
+
+**Verification.**
+
+```
+Recorded 222 cases against aurora-dsql
+Changed 2 fixture(s) in test/conformance/golden: multi_statement, occ_conflict
+
+$ make conformance
+    known gap alter_unique_using_index: ...
+    known gap occ_multirow_predicate: conflict_losers step 0: golden=2 emulator=1
+    conformance_test.go:114: 222 cases match the golden record
+
+$ make build && make vet && make test && make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.436s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.298s
+```
+
+After the waiver fix only `occ_conflict` was a real change; `multi_statement`
+was restored, so the run's lasting effect on the record is the four new probes.
+
+**A note on the token.** The file was the one from the previous run with about
+150 seconds left rather than a fresh one. The run fit, but the concurrency
+probes open new connections late, so a longer suite would not have. Worth
+checking `X-Amz-Date` before the next one.
 
 ### Probes for the two open backlog questions (2026-09-17)
 
@@ -1917,6 +1979,7 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | `occ_multirow_predicate` is a known gap, not a bug to fix | Failing both sides of a conflict needs DSQL's adjudication logic; the emulator borrows PostgreSQL's locks, where the first writer can always commit. Matching it would mean replacing the premise of the OCC layer for one recorded case. |
 | 2026-09-17 | A parent row and a child table per referential action | The actions differ in what they write to the child, so sharing a parent would have let one probe's delete disturb another's. |
 | 2026-09-17 | Marked the new pairs `ConflictRace` before knowing whether they conflict | It asserts how many transactions lost rather than which, so it is correct whichever way the recording goes, and wrong only if the count itself differs -- which is the thing worth catching. |
 | 2026-09-17 | Fill `{type}` and `{language}` from the refused statement | DSQL names what it refused, and a fixed sentence per rule cannot. The alternative was a rule per type, which would have meant twenty-odd near-identical rules and no way to name an array's element type at all. |
@@ -1988,15 +2051,10 @@ with zero protocol assumptions.
 
 ## Next up
 
-Every milestone is done, the adjudicator included. What remains:
+Every milestone is done, the adjudicator included, and PLAN.md's verification
+backlog is empty. What remains:
 
-### 1. Record the four new conflict probes
-
-The probes for PLAN.md's two open questions are written and run against the
-emulator, but no cluster has answered them, so `make conformance` reports four
-cases as not covered. One metered run settles both questions.
-
-### 2. Smaller items
+### 1. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).
@@ -2004,3 +2062,6 @@ cases as not covered. One metered run settles both questions.
   negative `every`, loads silently where an `unsupported` rule would not.
 - One conformance run took ~18s instead of ~1s and never reproduced; worth a
   glance if it returns.
+- `occ_multirow_predicate` is a known gap on one recording. A second run would
+  say whether DSQL always fails both sides of a multi-row conflict or whether
+  that run's commits simply landed together.

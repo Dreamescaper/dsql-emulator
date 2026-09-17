@@ -743,3 +743,39 @@ func TestCompareIgnoresMultiStatementRowsWhenAsked(t *testing.T) {
 		t.Fatalf("generated ids must not be enforced, got %v", diffs)
 	}
 }
+
+// A generated id rides on one statement of a multi-statement step as readily as
+// on a single-statement one, so IgnoreRows has to reach into Results for change
+// detection too, not only for comparison.
+func TestSaveIgnoresGeneratedRowsInsideAMultiStatementStep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "g.json")
+
+	withJobID := func(id string) *conformance.Golden {
+		return &conformance.Golden{
+			Suite: "s",
+			Cases: []conformance.RecordedCase{{
+				Case: conformance.Case{
+					Name: "a", Group: "g", SimpleProtocol: true, IgnoreRows: true,
+					Steps: []string{"BEGIN; CREATE INDEX ASYNC i ON t (a); COMMIT"},
+				},
+				Observations: []conformance.Observation{{Outcome: "ok", Results: []conformance.Result{
+					{CommandTag: "BEGIN"},
+					{CommandTag: "CREATE INDEX", Columns: []string{"job_id"}, Rows: [][]string{{id}}},
+					{CommandTag: "COMMIT"},
+				}}},
+			}},
+		}
+	}
+
+	if changed, err := conformance.Save(path, withJobID("3im2i7eszjgxtgz6qku7dc5rv4")); err != nil || !changed {
+		t.Fatalf("first save: changed=%v err=%v", changed, err)
+	}
+	changed, err := conformance.Save(path, withJobID("x6uomedydvez5a6zn43bgvn2g4"))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if changed {
+		t.Error("a fixture was rewritten for a generated id inside a multi-statement step")
+	}
+}

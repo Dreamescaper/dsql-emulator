@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-17T11:20:47.072516Z",
+  "recorded_at": "2026-09-17T15:06:49.773908Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -21,8 +21,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ],
         [
@@ -35,9 +36,8 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ]
       ]
@@ -63,13 +63,14 @@
             ],
             "rows": [
               [
-                "ww-a"
+                "ww-b"
               ]
             ]
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ],
         [
@@ -82,9 +83,8 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ]
       ]
@@ -110,7 +110,7 @@
             ],
             "rows": [
               [
-                "ww-a"
+                "fu-b"
               ]
             ]
           },
@@ -153,9 +153,8 @@
             "command_tag": "DELETE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -168,8 +167,9 @@
             "command_tag": "INSERT 0 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -206,6 +206,159 @@
           {
             "outcome": "ok",
             "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_fk_cascade_vs_child_write",
+      "group": "occ_conflict",
+      "note": "ON DELETE CASCADE deletes the child; does that conflict with a write to it?",
+      "steps": null,
+      "conflict_race": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "DELETE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_fk_set_null_vs_child_write",
+      "group": "occ_conflict",
+      "note": "ON DELETE SET NULL rewrites the child's key column",
+      "steps": null,
+      "conflict_race": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "DELETE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_fk_set_default_vs_child_write",
+      "group": "occ_conflict",
+      "note": "ON DELETE SET DEFAULT rewrites the child's key column to another parent",
+      "steps": null,
+      "conflict_race": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "DELETE 1"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 1"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "COMMIT"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "occ_multirow_predicate",
+      "group": "occ_conflict",
+      "note": "what row count does the loser report when its predicate spans several rows?",
+      "steps": null,
+      "conflict_race": true,
+      "sessions": [
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 3"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "schema has been updated by another transaction (OC001)"
+          }
+        ],
+        [
+          {
+            "outcome": "ok",
+            "command_tag": "BEGIN"
+          },
+          {
+            "outcome": "ok",
+            "command_tag": "UPDATE 3"
+          },
+          {
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "schema has been updated by another transaction (OC001)"
           }
         ]
       ]

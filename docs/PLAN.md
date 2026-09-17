@@ -149,6 +149,15 @@ statement on purpose, and it is what DSQL does too.
   the cluster adjudicates second; the emulator fails whichever asked the
   backend for the row second. The two coincide when a transaction commits in
   the order it wrote, and diverge when it does not.
+- **A conflict spanning several rows can leave no winner.** `occ_multirow_predicate`
+  recorded DSQL failing *both* transactions that updated the same three rows.
+  The emulator cannot: it adjudicates on the backend's row locks, and whichever
+  transaction takes them first is by construction able to commit. The row counts
+  match on both sides; how many transactions survive does not. The case carries
+  a `KnownGap` rather than being made to pass, because reproducing it means
+  modelling DSQL's adjudication rather than borrowing PostgreSQL's, which is the
+  premise the whole layer rests on. It is one recording, so whether DSQL always
+  fails both or did so because the two commits landed together is not known.
 - **A doomed transaction does not read its own writes.** They were rolled back
   to the savepoint. It cannot commit, so nothing it reads can be acted on.
 - **Some statements keep PostgreSQL's behavior.** A statement whose answer the
@@ -589,18 +598,16 @@ Answered by the multi-statement probes (recorded 2026-09-17):
 | `BEGIN; CREATE INDEX ASYNC ...; COMMIT` in one query? | Accepted, and the `job_id` comes back on the index build's own result, not on the `BEGIN`. |
 | `BEGIN; INSERT ...; COMMIT` in one query? | Accepted, three results. |
 
-Still open, with probes written and waiting on a run:
+Answered by the conflict probes recorded on 2026-09-17:
 
-- Whether a referential action conflicts through the child row it rewrites.
-  `occ_fk_cascade_vs_child_write`, `occ_fk_set_null_vs_child_write` and
-  `occ_fk_set_default_vs_child_write` each delete a parent while another session
-  writes the child the action would touch. The emulator conflicts in all three,
-  failing the parent delete; whether DSQL does is unrecorded.
-- What row count a losing statement reports when its predicate spans more than
-  one row. Every other conflict probe matches a single row by primary key.
-  `occ_multirow_predicate` has both sessions match the same three rows by a
-  non-key column; the emulator reports `UPDATE 3` for the loser, which is what
-  its shadow counted under the transaction's own snapshot.
+| Question | Answer |
+|----------|--------|
+| Does a referential action conflict through the child row it rewrites? | Yes, and the same way for all three: `ON DELETE CASCADE`, `SET NULL` and `SET DEFAULT` each fail the parent delete against a concurrent write to the child. The emulator matches, because PostgreSQL's action takes the child's row lock. |
+| What row count does a loser report when its predicate spans several rows? | The true count under its own snapshot, `UPDATE 3` for three rows, which is what the shadow computes. |
+| Who loses when the conflict spans several rows? | **Both.** DSQL failed every side of it, where the emulator leaves a winner. Recorded as a known gap; see below. |
+
+Nothing in the backlog is unanswered. The suite is the place to add the next
+question.
 
 ## Prior art
 

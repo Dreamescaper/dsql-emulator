@@ -405,13 +405,26 @@ func enforcedCase(c RecordedCase) RecordedCase {
 }
 
 // withoutRows clears what IgnoreRows waives: the rows themselves, and the
-// command tag when all it carries is how many there were.
+// command tag when all it carries is how many there were. A step that sent
+// several statements holds its rows per statement, and a generated id is as
+// likely to ride on one of those as on the step itself.
 func withoutRows(obs []Observation) []Observation {
 	out := make([]Observation, len(obs))
 	for i, o := range obs {
 		o.Rows = nil
 		if isRowCountTag(o.CommandTag) {
 			o.CommandTag = ""
+		}
+		if len(o.Results) > 0 {
+			results := make([]Result, len(o.Results))
+			for n, res := range o.Results {
+				res.Rows = nil
+				if isRowCountTag(res.CommandTag) {
+					res.CommandTag = ""
+				}
+				results[n] = res
+			}
+			o.Results = results
 		}
 		out[i] = o
 	}

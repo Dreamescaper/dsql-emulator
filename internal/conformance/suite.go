@@ -587,8 +587,14 @@ func occConflictCases() []Case {
 		// Every other conflict probe matches one row by primary key, so the row
 		// count a losing statement reports has never been tested against more
 		// than one. Both sessions match the same three rows by a non-key column.
+		// Recorded on 2026-09-17: both transactions failed. DSQL can reject
+		// every side of a conflict that spans several rows, where the emulator
+		// adjudicates on the backend's row locks and so always leaves the
+		// transaction that took them first as the winner. The row count is
+		// right on both sides; how many transactions survive is not.
 		{Name: "occ_multirow_predicate", Group: "occ_conflict", ConflictRace: true,
-			Note: "what row count does the loser report when its predicate spans several rows?",
+			KnownGap: "DSQL failed both transactions; the emulator leaves the first writer as the winner",
+			Note:     "what row count does the loser report when its predicate spans several rows?",
 			Sessions: [][]string{
 				{"BEGIN", "UPDATE baseline_span SET v = 'a-side' WHERE k = 1", "COMMIT"},
 				{"BEGIN", "UPDATE baseline_span SET v = 'b-side' WHERE k = 1", "COMMIT"},
