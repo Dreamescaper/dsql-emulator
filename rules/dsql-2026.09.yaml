@@ -58,6 +58,23 @@ unsupported:
     code: "0A000"
     message: "identity column is not supported without an explicit cache size. please define CACHE greater than or equal to 65536 or equal to 1"
 
+  # Reported in issue #2: only a bigint identity column is accepted, and the
+  # refusal names the type that was written. This follows the cache rule, which
+  # answers an identity column that has no CACHE at all.
+  - id: identity_type
+    stmt: create_stmt
+    identity_type_not: ["int8"]
+    code: "0A000"
+    message: "datatype {type} not supported, identity column type must be bigint"
+
+  # ALTER TABLE ADD COLUMN is restricted the same way, seen twice against the
+  # cluster (2026-09-18) before either run was discarded for unrelated reasons.
+  - id: identity_type_alter_column
+    stmt: alter_table_stmt
+    identity_type_not: ["int8"]
+    code: "0A000"
+    message: "datatype {type} not supported, identity column type must be bigint"
+
   # Data types are an allow-list in the documentation: anything absent from the
   # supported-types page is unsupported. This deny-list covers the tested set.
   - id: unsupported_type

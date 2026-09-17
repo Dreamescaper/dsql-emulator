@@ -41,7 +41,12 @@ func refusedType(r rules.Rule, node *pg_query.Node) string {
 			if name == nil || len(name.GetArrayBounds()) == 0 {
 				continue
 			}
-			return canonicalType(lastName(name)) + "[]"
+			return canonicalType(lastTypeName(name)) + "[]"
+		}
+	}
+	if len(r.IdentityTypeNot) > 0 {
+		if written, found := identityColumnType(node, r.IdentityTypeNot); found {
+			return canonicalType(written)
 		}
 	}
 	if len(r.ColumnType) > 0 {
@@ -50,7 +55,7 @@ func refusedType(r rules.Rule, node *pg_query.Node) string {
 			if name == nil {
 				continue
 			}
-			if written := lastName(name); contains(r.ColumnType, written) {
+			if written := lastTypeName(name); contains(r.ColumnType, written) {
 				return canonicalType(written)
 			}
 		}
@@ -61,17 +66,6 @@ func refusedType(r rules.Rule, node *pg_query.Node) string {
 		if contains(r.Function, called) {
 			return canonicalType(called)
 		}
-	}
-	return ""
-}
-
-func lastName(name *pg_query.TypeName) string {
-	names := name.GetNames()
-	if len(names) == 0 {
-		return ""
-	}
-	if s := names[len(names)-1].GetString_(); s != nil {
-		return s.GetSval()
 	}
 	return ""
 }

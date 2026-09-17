@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -777,5 +778,34 @@ func TestSaveIgnoresGeneratedRowsInsideAMultiStatementStep(t *testing.T) {
 	}
 	if changed {
 		t.Error("a fixture was rewritten for a generated id inside a multi-statement step")
+	}
+}
+
+// Every relation the setup creates has to be verified after it, or a setup that
+// reported success without leaving the schema in place would be recorded as the
+// cluster's behavior.
+func TestSetupRelationsAreVerified(t *testing.T) {
+	suite := conformance.DefaultSuite()
+
+	// A relation a probe removes on purpose cannot be verified, because the
+	// checks run after the probes as well as before them.
+	droppedByAProbe := map[string]bool{"baseline_drop_me": true}
+
+	verified := strings.Join(suite.Verify, "\n")
+	for _, sql := range suite.Setup {
+		rest, ok := strings.CutPrefix(sql, "CREATE TABLE ")
+		if !ok {
+			continue
+		}
+		name := rest[:strings.IndexAny(rest, " (")]
+		if droppedByAProbe[name] {
+			continue
+		}
+		if !strings.Contains(verified, " "+name+" ") {
+			t.Errorf("setup creates %s but nothing in Suite.Verify reads it", name)
+		}
+	}
+	if len(suite.Verify) == 0 {
+		t.Error("the suite verifies nothing after setup")
 	}
 }

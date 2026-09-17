@@ -67,6 +67,10 @@ type Rule struct {
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`
+	// IdentityTypeNot lists the types an identity column may have, by the name
+	// the parser uses internally; an identity column of any other type matches
+	// the rule.
+	IdentityTypeNot []string `yaml:"identity_type_not"`
 	// UnlessAsync marks a rule that exists only to require the dialect's ASYNC
 	// form. It does not apply to a statement that carried ASYNC, because the
 	// keyword is stripped before the statement is parsed.

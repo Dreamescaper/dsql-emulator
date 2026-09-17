@@ -513,6 +513,22 @@ every fixture must come out byte-identical. The 2026-09-17 run bore it out: of
 thirteen fixtures, ten were left untouched, two differed only in generated job
 ids, and one carried a real change.
 
+A setup or cleanup statement is retried when it fails with `40001`. Aurora DSQL
+adjudicates schema changes against the catalog, so a run of them can be told
+that another transaction got there first; retrying is what the service asks a
+client to do, and a suite that gave up instead would throw away a metered run
+for a reason that is expected behavior. A probe's own steps are never retried:
+what they answered is the record.
+
+`Suite.Verify` reads one row from every relation the setup creates, before the
+probes and again after them. A setup statement can report success and still
+leave the schema not as it was asked for, and a relation can go missing partway
+through a run that follows a lot of DDL; the probes after it then record
+"relation does not exist", or a conflict on a pair that cannot conflict, as
+though the cluster behaved that way. Both checks turn that into a failed run,
+which writes nothing. This is not hypothetical: it is how two recordings on
+2026-09-18 were caught, the first only by reading the diff.
+
 Safety, because the target is someone's cluster:
 
 - every object is prefixed `baseline_` and dropped by `Suite.Cleanup`, which
@@ -645,8 +661,15 @@ Answered by the conflict probes recorded on 2026-09-17:
 | What row count does a loser report when its predicate spans several rows? | The true count under its own snapshot, `UPDATE 3` for three rows, which is what the shadow computes. |
 | Who loses when the conflict spans several rows? | **Both.** DSQL failed every side of it, where the emulator leaves a winner. Recorded as a known gap; see below. |
 
-Nothing in the backlog is unanswered. The suite is the place to add the next
-question.
+Open, with probes written and waiting on a run:
+
+- Whether an identity column must be `bigint`, and whether `ALTER TABLE ADD
+  COLUMN` is restricted the same way. `identity_integer`, `identity_smallint`,
+  `identity_bigint_by_default` and `alter_add_identity_integer` answer both.
+  Two runs on 2026-09-18 recorded `0A000` for the integer and smallint forms and
+  for the `ALTER` one, and success for `bigint` — consistently, and early in
+  each run — but both runs were discarded for unrelated reasons, so the record
+  does not hold them. The rules were written on that evidence; see issue #2.
 
 ## Prior art
 

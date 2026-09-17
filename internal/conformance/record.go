@@ -111,6 +111,42 @@ func Observe(ctx context.Context, conn *pgx.Conn, sql string) Observation {
 	return obs
 }
 
+// schemaAttempts is how many times a schema statement is tried before the run
+// gives up on it.
+const schemaAttempts = 5
+
+// execRetryingConflicts runs a setup or cleanup statement, retrying a conflict.
+// Aurora DSQL adjudicates schema changes against the catalog, so a run of them
+// can be told that another transaction got there first; retrying is what the
+// service asks a client to do, and a probe suite that gave up instead would
+// throw away a metered run for a reason that is expected behavior.
+//
+// A probe's own steps are never retried: what they answered is the record.
+func execRetryingConflicts(ctx context.Context, conn *pgx.Conn, sql string) error {
+	var err error
+	for attempt := range schemaAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
+		}
+		if _, err = conn.Exec(ctx, sql); err == nil {
+			return nil
+		}
+		if !isSerializationFailure(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func isSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
 // ObserveSimple runs one step as a simple query, which is the only way to send
 // several statements at once -- what `psql -c 'a; b'` does. Every statement's
 // result is captured, because the interesting part is often the second one.
@@ -172,16 +208,28 @@ func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options)
 		defer cancel()
 		progress("cleanup: dropping %d objects", len(suite.Cleanup))
 		for _, sql := range suite.Cleanup {
-			if _, err := conn.Exec(cleanupCtx, sql); err != nil {
+			if err := execRetryingConflicts(cleanupCtx, conn, sql); err != nil {
 				progress("cleanup skipped %q: %v", sql, err)
 			}
 		}
 	}()
 
 	for _, sql := range suite.Setup {
-		if _, err := conn.Exec(ctx, sql); err != nil {
+		if err := execRetryingConflicts(ctx, conn, sql); err != nil {
 			return golden, fmt.Errorf("setup %q: %w", sql, err)
 		}
+	}
+
+	// A setup statement can report success and still leave the schema not as it
+	// was asked for. Probing on regardless would record a run of "relation does
+	// not exist" as the cluster's behavior and overwrite the record with it.
+	for _, sql := range suite.Verify {
+		if err := execRetryingConflicts(ctx, conn, sql); err != nil {
+			return golden, fmt.Errorf("the setup did not leave the schema in place, %q: %w", sql, err)
+		}
+	}
+	if len(suite.Verify) > 0 {
+		progress("setup verified: %d relations", len(suite.Verify))
 	}
 
 	for _, c := range suite.Cases {
@@ -216,6 +264,18 @@ func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options)
 		}
 
 		golden.Cases = append(golden.Cases, recorded)
+	}
+
+	// The schema the probes depend on has to still be there. Aurora DSQL
+	// adjudicates schema changes and propagates them asynchronously, so a run
+	// that follows a lot of DDL can lose a relation partway through; the probes
+	// after it then record "relation does not exist", or a conflict on a pair
+	// that cannot conflict, as though the cluster behaved that way. Saving that
+	// would overwrite a good record with a bad one.
+	for _, sql := range suite.Verify {
+		if err := execRetryingConflicts(ctx, conn, sql); err != nil {
+			return golden, fmt.Errorf("the schema did not survive the run, %q: %w", sql, err)
+		}
 	}
 
 	return golden, nil

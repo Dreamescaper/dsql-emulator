@@ -65,6 +65,11 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 			return false
 		}
 	}
+	if len(r.IdentityTypeNot) > 0 {
+		if _, found := identityColumnType(node, r.IdentityTypeNot); !found {
+			return false
+		}
+	}
 	if r.IdentityCacheMin != nil && !hasSmallIdentityCache(node, *r.IdentityCacheMin, r.CacheAllow) {
 		return false
 	}
@@ -288,6 +293,46 @@ func sequenceCache(node *pg_query.Node) (int, bool) {
 		return 0, false
 	}
 	return defElemInt(seq.GetOptions(), "cache")
+}
+
+// identityColumnType returns the type of the first identity column whose type
+// is not one the dialect allows, as the parser spells it, and reports whether
+// there was one. Aurora DSQL allows only bigint, and names the offending type
+// in its refusal.
+func identityColumnType(node *pg_query.Node, allowed []string) (string, bool) {
+	for _, col := range columnDefs(node) {
+		if !isIdentityColumn(col) {
+			continue
+		}
+		written := lastTypeName(col.GetTypeName())
+		if written == "" || contains(allowed, written) {
+			continue
+		}
+		return written, true
+	}
+	return "", false
+}
+
+func isIdentityColumn(col *pg_query.ColumnDef) bool {
+	for _, con := range col.GetConstraints() {
+		if c := con.GetConstraint(); c != nil && c.GetContype() == pg_query.ConstrType_CONSTR_IDENTITY {
+			return true
+		}
+	}
+	return false
+}
+
+// lastTypeName is the type's own name, without the schema the parser qualifies
+// a built-in with.
+func lastTypeName(name *pg_query.TypeName) string {
+	names := name.GetNames()
+	if len(names) == 0 {
+		return ""
+	}
+	if s := names[len(names)-1].GetString_(); s != nil {
+		return s.GetSval()
+	}
+	return ""
 }
 
 // hasSmallIdentityCache reports whether any identity column in a CREATE TABLE
