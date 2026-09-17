@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-17T22:24:00.516835Z",
+  "recorded_at": "2026-09-17T23:08:45.041886Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -145,6 +145,126 @@
         {
           "outcome": "ok",
           "command_tag": "CREATE TABLE"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_pk_constraint",
+      "group": "backlog",
+      "note": "add a primary key to a table that has none",
+      "steps": [
+        "ALTER TABLE baseline_alter_pkadd ADD CONSTRAINT baseline_pkadd_pk PRIMARY KEY (id)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ADD CONSTRAINT statement"
+        }
+      ]
+    },
+    {
+      "name": "alter_add_unique_constraint",
+      "group": "backlog",
+      "note": "add a unique constraint without an index to adopt",
+      "steps": [
+        "ALTER TABLE baseline_alter_pkadd ADD CONSTRAINT baseline_pkadd_uq UNIQUE (v)"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported ALTER TABLE ADD CONSTRAINT statement"
+        }
+      ]
+    },
+    {
+      "name": "q_row_constructor",
+      "group": "backlog",
+      "note": "a row value built in the projection",
+      "steps": [
+        "SELECT ROW(1, 'a')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "row"
+          ],
+          "rows": [
+            [
+              "[1 a]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_row_comparison",
+      "group": "backlog",
+      "note": "two row values compared",
+      "steps": [
+        "SELECT ROW(1, 'a') = ROW(1, 'a') AS same"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "same"
+          ],
+          "rows": [
+            [
+              "true"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_whole_row_reference",
+      "group": "backlog",
+      "note": "a table referenced as a whole row, which is a composite of its rowtype",
+      "steps": [
+        "SELECT baseline_parent FROM baseline_parent LIMIT 1"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "baseline_parent"
+          ],
+          "rows": [
+            [
+              "(00000000-0000-0000-0000-0000000000aa,seed)"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_whole_row_in_subquery",
+      "group": "backlog",
+      "note": "the shape an ORM generates for a nested projection",
+      "steps": [
+        "SELECT (SELECT p FROM baseline_parent p WHERE p.id = c.id) AS whole FROM baseline_parent c LIMIT 1"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "whole"
+          ],
+          "rows": [
+            [
+              "(00000000-0000-0000-0000-0000000000aa,seed)"
+            ]
+          ]
         }
       ]
     },

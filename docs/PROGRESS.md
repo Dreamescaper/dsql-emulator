@@ -52,6 +52,79 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Recorded both issues' probes: #3 confirmed, #4 not reproduced (2026-09-18)
+
+232 cases recorded against the cluster, schema verified before and after, and
+**the emulator matches all 232** with only the accepted `alter_unique_using_index`
+divergence.
+
+**Issue #3 is confirmed exactly.** `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY
+KEY` and `... UNIQUE` are both refused with
+`0A000 unsupported ALTER TABLE ADD CONSTRAINT statement` — the code and the
+wording the rule was written to produce. The `USING INDEX` exception the record
+already pinned still holds.
+
+**Issue #4 is not reproduced, and that is the useful result.** All four probes
+succeeded on the cluster:
+
+| probe | Aurora DSQL |
+|-------|-------------|
+| `SELECT ROW(1, 'a')` | `[1 a]` |
+| `SELECT ROW(1,'a') = ROW(1,'a')` | `true` |
+| `SELECT baseline_parent FROM baseline_parent` | `(00000000-…-aa,seed)` |
+| the same as a subquery projection | `(00000000-…-aa,seed)` |
+
+So DSQL does not reject composite row values as a class. **A rule refusing them
+would have failed code a cluster runs**, which is the failure that costs a user
+more than the gap does: the emulator would block development rather than let a
+divergence through. Declining to write one on a single ORM-generated query was
+the right call, and the probes are what turned that from a judgement into a
+measurement.
+
+Whatever the reported `42804 attribute 1 of type "Orders" has wrong type` comes
+from, it is narrower than "a query carries a row value". The query it was seen
+with is a nested projection over two tables, which none of these four shapes
+reaches; pinning it needs a probe that reproduces that shape.
+
+Files: `test/conformance/golden/backlog.json`,
+`test/conformance/golden/occ_conflict.json`, `docs/PLAN.md`.
+
+**Verification.**
+
+```
+setup verified: 18 relations
+recorded alter_add_pk_constraint      error 0A000
+recorded alter_add_unique_constraint  error 0A000
+recorded q_row_constructor            SELECT 1
+recorded q_whole_row_in_subquery      SELECT 1
+Recorded 232 cases against aurora-dsql
+Changed 2 fixture(s) in test/conformance/golden: backlog, occ_conflict
+
+$ make conformance
+    conformance_test.go:114: 232 cases match the golden record
+```
+
+`occ_conflict` changed because the multi-row conflict raced the other way again,
+which `ConflictRace` absorbs.
+
+### An intermittent conformance failure, not root-caused (2026-09-18)
+
+CI failed once on the commit before this one, and passed on a re-run of the same
+commit. The client's connection died partway through the suite, right after
+`two_ddl_one_txn` — a refusal inside a transaction — and every probe after it
+recorded a connection error rather than an answer. The probes added in that
+commit run later than the failure point, so they are not the cause.
+
+It has not reproduced: 8 plain runs and 4 under `-race` locally, all green, plus
+the CI re-run. A connection dying that way means the client saw something it did
+not expect and hung up, which is the same class of fault as issue #1, and the
+session's newest machinery — the exchange accounting and the savepoint
+injection — is the first place to look. Left open rather than guessed at.
+
+The post-run schema check reported it as "the schema did not survive the run",
+which is the wrong diagnosis for a dead connection; worth separating so the next
+occurrence names itself.
+
 ### Refuse ALTER TABLE ADD CONSTRAINT ... PRIMARY KEY, and probe composite rows (2026-09-18)
 
 Two reports, and only one of them can be acted on yet.
@@ -2421,6 +2494,7 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | No rule for composite row values, confirmed by recording | The probes show DSQL accepting every shape tried. A rule would have refused code that runs on a cluster, which is a worse failure than the gap it was meant to close. |
 | 2026-09-18 | The key-constraint rule exempts `USING INDEX` | The record shows DSQL reaching `55000 index is not valid` for that form, which means the statement is accepted and the index is the problem. A blanket refusal would have contradicted a recorded probe. |
 | 2026-09-18 | No rule for composite row values, only probes | Which shapes DSQL rejects is unrecorded, and a rule guessed from one ORM query would refuse some the cluster accepts. An emulator that fails working code blocks development; one that misses a divergence surfaces it later. |
 | 2026-09-18 | Job ids are base32 of sixteen bytes, not UUIDs | Derived from the ten ids in the record: the full RFC 4648 alphabet appears and 0/1/8/9 never do. The width is what a client sees, and matching it costs nothing. |
@@ -2509,13 +2583,22 @@ with zero protocol assumptions.
 Every milestone is done, the adjudicator included, and PLAN.md's verification
 backlog is empty. What remains:
 
-### 1. Record the six new probes
+### 1. The intermittent conformance failure
 
-`alter_add_pk_constraint` and `alter_add_unique_constraint` confirm issue #3's
-refusal, and the four `q_row_*` probes answer issue #4, which has no rule until
-they do. One run settles both.
+CI lost the client connection partway through one run and passed on a re-run;
+it has not reproduced in twelve local runs. The exchange accounting and the
+savepoint injection are the newest session machinery and the first place to
+look. The post-run schema check also misreports a dead connection as a missing
+relation, which is worth separating first so the next occurrence names itself.
 
-### 2. Smaller items
+### 2. Reproduce issue #4's shape
+
+Composite row values are not refused as a class, so the reported
+`42804 attribute 1 of type "Orders" has wrong type` comes from something
+narrower. A probe that reproduces the ORM's nested projection over two tables
+would pin it.
+
+### 3. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).
