@@ -10,7 +10,7 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
 rather than by a PostgreSQL syntax error. The baseline was
-re-recorded against the cluster on 2026-09-17 and the emulator matches all 212
+re-recorded against the cluster on 2026-09-17 and the emulator matches all 218
 cases against it, the adjudicator included. A baseline run now rewrites only the
 fixtures whose answers changed — measured by what the record enforces, so a
 generated job id or a flipped race does not count — and that run touched one
@@ -18,7 +18,7 @@ fixture. M5 closed with the OCC adjudicator: conflicts are
 resolved at `COMMIT` without waiting for locks, across write-write,
 `FOR UPDATE`, `FOR KEY SHARE` and foreign-key overlap. The four conflicting
 conformance probes are no longer record-only — they are replayed against the
-emulator and enforced. The golden record still holds all 212 probes the suite
+emulator and enforced. The golden record holds all 218 probes the suite
 defines; the emulator matches every one except the accepted
 `alter_unique_using_index` gap, and nothing is unrecorded. Refusals inside a
 transaction fail it exactly as Aurora DSQL does, `CREATE INDEX ASYNC` and
@@ -48,6 +48,65 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Recorded the multi-statement probes; every inference held (2026-09-17)
+
+Ran `dsql-baseline` against the cluster in `eu-central-1` with a fresh token,
+through `--token-file`. 218 cases recorded, 43 objects dropped, no cleanup
+skips. **The emulator matches all 218**, with the single accepted
+`alter_unique_using_index` gap and nothing unrecorded.
+
+The six `multi_statement` probes had never been answered by a cluster, and what
+the emulator did with them was inferred from its own transaction rules. The
+cluster agreed with every one:
+
+| probe | Aurora DSQL |
+|-------|-------------|
+| `SELECT 1 AS a; SELECT 2 AS b` | two results, own columns each |
+| two `CREATE TABLE` | `0A000 multiple ddl statements not supported in a transaction` |
+| `CREATE TABLE` then `INSERT` | `0A000 ddl and dml are not supported in the same transaction` |
+| `CREATE TABLE` then `CREATE INDEX ASYNC` | `0A000 multiple ddl statements not supported in a transaction` |
+| `BEGIN; CREATE INDEX ASYNC ...; COMMIT` | accepted; `job_id` on the index build's own result |
+| `BEGIN; INSERT ...; COMMIT` | accepted, three results |
+
+Two of those are worth naming. The fourth is the exact case the README carried
+as a limitation this morning, and it confirms the fix reports what DSQL reports
+rather than merely something better than a syntax error. The fifth confirms the
+job-id splicing: DSQL puts the id on the second result, which is where the
+emulator puts it, and the probe would have caught it on the `BEGIN`.
+
+**The save hygiene held up under the case it was built for.** A run that added
+six probes wrote exactly one fixture:
+
+```
+Recorded 218 cases against aurora-dsql
+Changed 1 fixture(s) in test/conformance/golden: multi_statement
+```
+
+Twelve fixtures were left untouched, timestamps included, through a run that
+regenerated every `sys.jobs` id and re-raced every conflict probe. `recorded_at`
+now reads 2026-09-16 on ten of them, 2026-09-17T11:20 on `occ_conflict`, and
+2026-09-17T14:54 on `multi_statement` — one date per run that changed something.
+
+Files: `test/conformance/golden/multi_statement.json` (new), `docs/PLAN.md`,
+`README.md`.
+
+**Verification.**
+
+```
+$ make conformance
+    conformance_test.go:114: 218 cases match the golden record
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	3.837s
+
+$ make build && make vet && make test && make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	3.994s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	7.803s
+```
+
+**Correction.** An earlier note said recording these probes would also settle
+PLAN.md's two open backlog questions. It did not: neither has a probe, so both
+are still open. The run answered the multi-statement questions only, which are
+now recorded in PLAN.md's backlog.
 
 ### The suite can probe multi-statement queries (2026-09-17)
 
@@ -1745,6 +1804,7 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Kept the multi-statement probes' recorded messages as advisory, like every other message | DSQL words the two refusals differently from the emulator (`multiple ddl statements not supported in a transaction` against `a transaction can include only one DDL statement`). The SQLSTATE is the contract, and matching wording across systems is not a goal. |
 | 2026-09-17 | Record one `Result` per statement rather than one `Observation` per statement | Keeps the step-to-observation mapping the comparison and the diff messages rely on, and keeps a multi-statement step legible as one thing in the record. |
 | 2026-09-17 | Added the probes before recording them | The harness change is what needed reviewing and testing; the answers cost a metered run. An unrecorded probe is reported, not silently passed, so the gap stays visible until it is filled. |
 | 2026-09-17 | Renumber a shadow's parameters instead of declaring their types | The planned `ParameterDescription` capture existed only to keep an unused parameter typeable. Dropping the unused ones removes the need, and with it a `Describe` tracker, an OID cache, and a dependency on the client having described the statement at all. |
@@ -1812,12 +1872,13 @@ with zero protocol assumptions.
 
 Every milestone is done, the adjudicator included. What remains:
 
-### 1. Record the multi-statement probes
+### 1. The two open backlog questions
 
-The `multi_statement` group runs against the emulator but has never been
-answered by a cluster, so `make conformance` reports six cases as not covered.
-Folding them into the next baseline run settles what DSQL does with `a; b`, and
-would also answer the two open questions in PLAN.md's backlog.
+PLAN.md still lists two unanswered questions, and neither has a probe: whether
+`SET DEFAULT` and `CASCADE` conflict the way `SET NULL` does, and whether a
+losing statement's row count holds when its predicate spans rows the
+transaction's own snapshot no longer agrees on. Both need probes written first,
+then a metered run.
 
 ### 2. Smaller items
 

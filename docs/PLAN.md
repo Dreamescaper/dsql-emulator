@@ -577,6 +577,17 @@ Answered by the baseline run on 2026-09-17:
 | Do DSQL's row counts for a losing statement match the emulator's shadow? | Yes for the probed shapes: the loser reports `UPDATE 1`, `DELETE 1`, `INSERT 0 1` and `SELECT 1` exactly as the shadow synthesizes them, and the emulator matches all 212 cases against the run. |
 | Is the loser a race, or does DSQL pick deterministically? | A race. `occ_fk_delete_insert` failed the other session than the 2026-09-16 run did, from the same probe. |
 
+Answered by the multi-statement probes (recorded 2026-09-17):
+
+| Question | Answer |
+|----------|--------|
+| Does DSQL run a multi-statement simple query at all? | Yes, and it answers once per statement: `SELECT 1 AS a; SELECT 2 AS b` comes back as two results with their own columns. |
+| Two DDL in one such query? | `0A000 multiple ddl statements not supported in a transaction` — the query is one implicit transaction, exactly as a multi-step case is. |
+| DDL and DML in one? | `0A000 ddl and dml are not supported in the same transaction`. |
+| A table and its `CREATE INDEX ASYNC` in one query? | `0A000 multiple ddl statements not supported in a transaction`, which is what the emulator now reports where it used to forward the keyword and collect a syntax error. |
+| `BEGIN; CREATE INDEX ASYNC ...; COMMIT` in one query? | Accepted, and the `job_id` comes back on the index build's own result, not on the `BEGIN`. |
+| `BEGIN; INSERT ...; COMMIT` in one query? | Accepted, three results. |
+
 Still open:
 
 - Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`; only the

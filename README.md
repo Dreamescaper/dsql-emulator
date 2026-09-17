@@ -19,7 +19,7 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 212 probes, and the emulator is diffed against it. A
+real cluster answered for 218 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
 silently passing. Every probe in the suite is currently recorded, and the
 emulator matches all of them but one accepted divergence.

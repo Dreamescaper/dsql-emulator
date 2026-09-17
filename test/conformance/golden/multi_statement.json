@@ -1,0 +1,153 @@
+{
+  "recorded_at": "2026-09-17T14:54:30.457928Z",
+  "target": "aurora-dsql",
+  "server_version": "PostgreSQL 16",
+  "suite": "dsql-baseline",
+  "cases": [
+    {
+      "name": "multi_two_selects",
+      "group": "multi_statement",
+      "note": "confirm a multi-statement simple query runs at all, and answers once per statement",
+      "steps": [
+        "SELECT 1 AS a; SELECT 2 AS b"
+      ],
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "results": [
+            {
+              "command_tag": "SELECT 1",
+              "columns": [
+                "a"
+              ],
+              "rows": [
+                [
+                  "1"
+                ]
+              ]
+            },
+            {
+              "command_tag": "SELECT 1",
+              "columns": [
+                "b"
+              ],
+              "rows": [
+                [
+                  "2"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multi_two_ddl",
+      "group": "multi_statement",
+      "note": "two DDL in one implicit transaction, without the ASYNC keyword in play",
+      "steps": [
+        "CREATE TABLE baseline_multi_a (id int); CREATE TABLE baseline_multi_b (id int)"
+      ],
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "multiple ddl statements not supported in a transaction"
+        }
+      ]
+    },
+    {
+      "name": "multi_ddl_then_dml",
+      "group": "multi_statement",
+      "note": "DDL and DML in one implicit transaction",
+      "steps": [
+        "CREATE TABLE baseline_multi_c (id int); INSERT INTO baseline_multi_c (id) VALUES (1)"
+      ],
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "ddl and dml are not supported in the same transaction"
+        }
+      ]
+    },
+    {
+      "name": "multi_ddl_then_async_index",
+      "group": "multi_statement",
+      "note": "the shape psql -c sends: a table and its index in one query",
+      "steps": [
+        "CREATE TABLE baseline_multi_d (id int); CREATE INDEX ASYNC baseline_multi_d_idx ON baseline_multi_d (id)"
+      ],
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "multiple ddl statements not supported in a transaction"
+        }
+      ]
+    },
+    {
+      "name": "multi_async_index_in_txn",
+      "group": "multi_statement",
+      "note": "one DDL in an explicit transaction: does the job id ride on the index build's own result?",
+      "steps": [
+        "BEGIN; CREATE INDEX ASYNC baseline_multi_idx ON baseline_multi (a); COMMIT"
+      ],
+      "ignore_rows": true,
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "results": [
+            {
+              "command_tag": "BEGIN"
+            },
+            {
+              "command_tag": "CREATE INDEX",
+              "columns": [
+                "job_id"
+              ],
+              "rows": [
+                [
+                  "3im2i7eszjgxtgz6qku7dc5rv4"
+                ]
+              ]
+            },
+            {
+              "command_tag": "COMMIT"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multi_dml_in_txn",
+      "group": "multi_statement",
+      "note": "an explicit transaction of DML in one query",
+      "steps": [
+        "BEGIN; INSERT INTO baseline_multi (id, a) VALUES (1, 1); COMMIT"
+      ],
+      "simple_protocol": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "results": [
+            {
+              "command_tag": "BEGIN"
+            },
+            {
+              "command_tag": "INSERT 0 1"
+            },
+            {
+              "command_tag": "COMMIT"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
