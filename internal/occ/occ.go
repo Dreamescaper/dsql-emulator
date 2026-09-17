@@ -8,6 +8,7 @@ package occ
 
 import (
 	"fmt"
+	"sort"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -43,6 +44,12 @@ type Intent struct {
 	// Rowset reports whether the client is waiting for Shadow's rows, rather
 	// than only for the count of them.
 	Rowset bool
+	// Params are the client's parameter positions the shadow asks for, in the
+	// order it asks for them. A shadow keeps only the parameters it still
+	// refers to, renumbered from $1: PostgreSQL infers a parameter's type from
+	// where it is used, so one the shadow dropped -- everything in the SET list
+	// of an UPDATE, say -- cannot be left declared and unmentioned.
+	Params []int
 }
 
 // CommandTag renders the tag for a row count.
@@ -64,12 +71,6 @@ func Analyze(sql string) *Intent {
 	}
 	node := tree.GetStmts()[0].GetStmt()
 	if node == nil {
-		return nil
-	}
-	// A shadow is a different statement, so the client's bound values cannot be
-	// carried over to it: the parameter numbering it would need belongs to the
-	// statement that was refused.
-	if hasParameters(node) {
 		return nil
 	}
 
@@ -109,11 +110,7 @@ func Analyze(sql string) *Intent {
 		}
 		// The rows are the same either way; only the lock is not taken.
 		sel.LockingClause = nil
-		shadow, ok := deparse(node)
-		if !ok {
-			return nil
-		}
-		return &Intent{Tag: "SELECT", Rows: -1, Shadow: shadow, Rowset: true}
+		return shadowIntent("SELECT", node, true)
 	}
 
 	return nil
@@ -133,11 +130,61 @@ func countIntent(tag string, rel *pg_query.RangeVar, extra []*pg_query.Node, whe
 		LimitOption: pg_query.LimitOption_LIMIT_OPTION_DEFAULT,
 		Op:          pg_query.SetOperation_SETOP_NONE,
 	}
-	shadow, ok := deparse(&pg_query.Node{Node: &pg_query.Node_SelectStmt{SelectStmt: sel}})
+	return shadowIntent(tag, &pg_query.Node{Node: &pg_query.Node_SelectStmt{SelectStmt: sel}}, false)
+}
+
+// shadowIntent renders a shadow statement and the parameters it needs.
+func shadowIntent(tag string, node *pg_query.Node, rowset bool) *Intent {
+	params, ok := renumberParams(node)
 	if !ok {
 		return nil
 	}
-	return &Intent{Tag: tag, Rows: -1, Shadow: shadow}
+	shadow, ok := deparse(node)
+	if !ok {
+		return nil
+	}
+	return &Intent{Tag: tag, Rows: -1, Shadow: shadow, Rowset: rowset, Params: params}
+}
+
+// renumberParams rewrites the parameters a shadow still refers to so that they
+// run from $1, and returns the client's positions in that order, so the values
+// it bound can be picked out and sent in the order the shadow asks for them.
+func renumberParams(node *pg_query.Node) ([]int, bool) {
+	var refs []*pg_query.ParamRef
+	walk(node.ProtoReflect(), func(n *pg_query.Node) {
+		if ref := n.GetParamRef(); ref != nil {
+			refs = append(refs, ref)
+		}
+	})
+	if len(refs) == 0 {
+		return nil, true
+	}
+
+	var order []int32
+	seen := make(map[int32]bool, len(refs))
+	for _, ref := range refs {
+		number := ref.GetNumber()
+		if number < 1 {
+			// Not a parameter this can reason about.
+			return nil, false
+		}
+		if !seen[number] {
+			seen[number] = true
+			order = append(order, number)
+		}
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+
+	renumbered := make(map[int32]int32, len(order))
+	positions := make([]int, len(order))
+	for i, number := range order {
+		renumbered[number] = int32(i + 1)
+		positions[i] = int(number)
+	}
+	for _, ref := range refs {
+		ref.Number = renumbered[ref.GetNumber()]
+	}
+	return positions, true
 }
 
 func countStar() *pg_query.Node {
@@ -159,17 +206,6 @@ func deparse(node *pg_query.Node) (string, bool) {
 		return "", false
 	}
 	return out, true
-}
-
-// hasParameters reports whether a statement carries bind parameters.
-func hasParameters(node *pg_query.Node) bool {
-	found := false
-	walk(node.ProtoReflect(), func(n *pg_query.Node) {
-		if n.GetParamRef() != nil {
-			found = true
-		}
-	})
-	return found
 }
 
 // walk visits every Node in a parsed statement. libpg_query exposes no walker,

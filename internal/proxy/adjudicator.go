@@ -34,6 +34,39 @@ type inFlight struct {
 	// formats are the result format codes the client's Bind asked for, so a
 	// shadow answers in the encoding the client is already decoding.
 	formats []int16
+	// params and paramFormats are the values the client bound, which a shadow
+	// that kept any of the statement's parameters is run with.
+	params       [][]byte
+	paramFormats []int16
+}
+
+// shadowParams picks out the values the shadow asks for, in its own order, from
+// the ones the client bound.
+func (f *inFlight) shadowParams() (values [][]byte, formats []int16, ok bool) {
+	for _, pos := range f.intent.Params {
+		if pos < 1 || pos > len(f.params) {
+			return nil, nil, false
+		}
+		values = append(values, f.params[pos-1])
+		formats = append(formats, bindFormat(f.paramFormats, pos))
+	}
+	return values, formats, true
+}
+
+// bindFormat reports the format code the client bound one parameter with. A
+// Bind carries no codes when every value is text, one when they all share it,
+// and otherwise one per parameter.
+func bindFormat(codes []int16, position int) int16 {
+	switch {
+	case len(codes) == 0:
+		return 0
+	case len(codes) == 1:
+		return codes[0]
+	case position-1 < len(codes):
+		return codes[position-1]
+	default:
+		return 0
+	}
 }
 
 // hiddenExchange is an exchange the emulator runs on the upstream on its own
@@ -72,15 +105,32 @@ func (s *session) setHidden(h *hiddenExchange) {
 
 // setInFlight records what the statement now executing would report if the
 // backend refuses it a lock. A nil intent means the emulator cannot reproduce
-// the answer, so a conflict is reported where PostgreSQL raises it.
-func (s *session) setInFlight(intent *occ.Intent, extended bool, formats []int16) {
+// the answer, so a conflict is reported where PostgreSQL raises it. bind is the
+// client's Bind, or nil for a simple query, which binds nothing.
+func (s *session) setInFlight(intent *occ.Intent, bind *pgproto3.Bind) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if intent == nil {
+
+	switch {
+	case intent == nil:
 		s.occInFlight = nil
-		return
+	case bind == nil:
+		// A simple query carries no values, so a shadow that needs any of them
+		// cannot be run for it.
+		if len(intent.Params) > 0 {
+			s.occInFlight = nil
+			return
+		}
+		s.occInFlight = &inFlight{intent: *intent}
+	default:
+		s.occInFlight = &inFlight{
+			intent:       *intent,
+			extended:     true,
+			formats:      bind.ResultFormatCodes,
+			params:       bind.Parameters,
+			paramFormats: bind.ParameterFormatCodes,
+		}
 	}
-	s.occInFlight = &inFlight{intent: *intent, extended: extended, formats: formats}
 }
 
 // occAdjudicated reports whether this transaction was refused a lock, so its
@@ -229,6 +279,12 @@ func (s *session) runShadow(repair *inFlight) {
 
 // runCountShadow counts the rows the refused statement would have changed.
 func (s *session) runCountShadow(repair *inFlight) {
+	values, formats, ok := repair.shadowParams()
+	if !ok {
+		s.failRepair()
+		return
+	}
+
 	var failed bool
 	rows := 0
 	untilReady := consumeUntilReady(&failed)
@@ -249,7 +305,15 @@ func (s *session) runCountShadow(repair *inFlight) {
 			s.completeRepair(repair, rows)
 		},
 	})
-	if err := s.writeUpstream(simpleQuery(repair.intent.Shadow)); err != nil {
+	// The count is read here rather than forwarded, so it is asked for as text
+	// whatever the client's own statement was bound for.
+	var err error
+	if len(values) > 0 {
+		err = s.writeUpstream(extendedQuery(repair.intent.Shadow, values, formats, nil))
+	} else {
+		err = s.writeUpstream(simpleQuery(repair.intent.Shadow))
+	}
+	if err != nil {
 		s.close()
 	}
 }
@@ -257,6 +321,12 @@ func (s *session) runCountShadow(repair *inFlight) {
 // runRowsetShadow re-runs a refused locking SELECT without its locking clause.
 // The rows are the same; only the lock is not taken.
 func (s *session) runRowsetShadow(repair *inFlight) {
+	values, formats, ok := repair.shadowParams()
+	if !ok {
+		s.failRepair()
+		return
+	}
+
 	var failed bool
 	s.setHidden(&hiddenExchange{
 		consume: func(msg wire.Message) bool {
@@ -287,7 +357,7 @@ func (s *session) runRowsetShadow(repair *inFlight) {
 
 	var err error
 	if repair.extended {
-		err = s.writeUpstream(extendedQuery(repair.intent.Shadow, repair.formats))
+		err = s.writeUpstream(extendedQuery(repair.intent.Shadow, values, formats, repair.formats))
 	} else {
 		err = s.writeUpstream(simpleQuery(repair.intent.Shadow))
 	}
@@ -321,12 +391,19 @@ func (s *session) failRepair() {
 	s.beginFailure(txnFailure{statement: abortTransactionQuery, status: 'E', swallow: 1})
 }
 
-// extendedQuery runs a statement through the extended protocol, asking for the
-// result format codes the client's own Bind asked for.
-func extendedQuery(sql string, formats []int16) []byte {
+// extendedQuery runs a statement through the extended protocol, bound with the
+// values the shadow asks for and asking for the result format codes the caller
+// wants. The parameter types are left to the backend to infer: a shadow keeps
+// each parameter in the expression it was already used in, so it is inferred
+// from the same context as in the statement that was refused.
+func extendedQuery(sql string, values [][]byte, paramFormats, resultFormats []int16) []byte {
 	var out []byte
 	out, _ = (&pgproto3.Parse{Query: sql}).Encode(out)
-	out, _ = (&pgproto3.Bind{ResultFormatCodes: formats}).Encode(out)
+	out, _ = (&pgproto3.Bind{
+		Parameters:           values,
+		ParameterFormatCodes: paramFormats,
+		ResultFormatCodes:    resultFormats,
+	}).Encode(out)
 	out, _ = (&pgproto3.Execute{}).Encode(out)
 	out, _ = (&pgproto3.Sync{}).Encode(out)
 	return out

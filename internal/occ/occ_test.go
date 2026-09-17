@@ -155,17 +155,92 @@ func TestCommandTag(t *testing.T) {
 	}
 }
 
-// A parameterised statement has no shadow: the values the client bound belong
-// to the statement that was refused, not to the one that would replace it.
-func TestAnalyzeDeclinesParameterisedStatements(t *testing.T) {
-	for _, sql := range []string{
-		"UPDATE t SET v = $1 WHERE id = $2",
-		"DELETE FROM t WHERE id = $1",
-		"INSERT INTO t (a) VALUES ($1)",
-		"SELECT v FROM t WHERE id = $1 FOR UPDATE",
-	} {
-		if got := occ.Analyze(sql); got != nil {
-			t.Errorf("Analyze(%q) = %+v, want nil", sql, got)
-		}
+// A shadow keeps only the parameters it still refers to, renumbered from $1,
+// and reports which of the client's it needs. PostgreSQL cannot infer a type
+// for a parameter the statement no longer mentions, so the ones the shadow
+// dropped cannot be left declared.
+func TestAnalyzeRenumbersTheParametersAShadowKeeps(t *testing.T) {
+	tests := []struct {
+		name   string
+		sql    string
+		shadow string
+		params []int
+		rows   int
+	}{
+		{
+			name:   "the set list is dropped, the predicate renumbered",
+			sql:    "UPDATE t SET v = $1 WHERE id = $2",
+			shadow: "SELECT count(*) FROM t WHERE id = $1",
+			params: []int{2},
+			rows:   -1,
+		},
+		{
+			name:   "several predicate parameters keep their order",
+			sql:    "UPDATE t SET v = $1 WHERE id = $2 AND k = $3",
+			shadow: "SELECT count(*) FROM t WHERE id = $1 AND k = $2",
+			params: []int{2, 3},
+			rows:   -1,
+		},
+		{
+			name:   "a delete keeps the numbering it already has",
+			sql:    "DELETE FROM t WHERE id = $1",
+			shadow: "SELECT count(*) FROM t WHERE id = $1",
+			params: []int{1},
+			rows:   -1,
+		},
+		{
+			name:   "a locking select keeps every parameter",
+			sql:    "SELECT v FROM t WHERE id = $1 AND k = $2 FOR UPDATE",
+			shadow: "SELECT v FROM t WHERE id = $1 AND k = $2",
+			params: []int{1, 2},
+			rows:   -1,
+		},
+		{
+			name:   "one parameter used twice is asked for once",
+			sql:    "UPDATE t SET v = $1 WHERE id = $2 OR k = $2",
+			shadow: "SELECT count(*) FROM t WHERE id = $1 OR k = $1",
+			params: []int{2},
+			rows:   -1,
+		},
+		{
+			name:   "an insert states its own count and needs no parameters",
+			sql:    "INSERT INTO t (a, b) VALUES ($1, $2)",
+			params: nil,
+			rows:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := occ.Analyze(tt.sql)
+			if got == nil {
+				t.Fatalf("Analyze(%q) = nil, want an intent", tt.sql)
+			}
+			if got.Shadow != tt.shadow {
+				t.Errorf("shadow = %q, want %q", got.Shadow, tt.shadow)
+			}
+			if got.Rows != tt.rows {
+				t.Errorf("rows = %d, want %d", got.Rows, tt.rows)
+			}
+			if len(got.Params) != len(tt.params) {
+				t.Fatalf("params = %v, want %v", got.Params, tt.params)
+			}
+			for i := range tt.params {
+				if got.Params[i] != tt.params[i] {
+					t.Fatalf("params = %v, want %v", got.Params, tt.params)
+				}
+			}
+		})
+	}
+}
+
+// A statement with no parameters asks for none.
+func TestAnalyzeAsksForNoParametersWhenThereAreNone(t *testing.T) {
+	got := occ.Analyze("UPDATE t SET v = 'x' WHERE id = 1")
+	if got == nil {
+		t.Fatal("Analyze returned nil")
+	}
+	if len(got.Params) != 0 {
+		t.Fatalf("params = %v, want none", got.Params)
 	}
 }

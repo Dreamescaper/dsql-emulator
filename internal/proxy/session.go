@@ -391,7 +391,7 @@ func (s *session) handleQuery(msg wire.Message) {
 		}
 		s.resetOcc()
 	} else if s.tracker.Stats().InTxn {
-		s.setInFlight(occ.Analyze(query.String), false, nil)
+		s.setInFlight(occ.Analyze(query.String), nil)
 	}
 
 	if rewritten := s.rewriteSQL(query.String); rewritten != "" {
@@ -510,7 +510,7 @@ func (s *session) handleBind(msg wire.Message) {
 		}
 		s.resetOcc()
 	} else if s.tracker.Stats().InTxn {
-		s.setInFlight(info.intent, true, bind.ResultFormatCodes)
+		s.setInFlight(info.intent, bind)
 	}
 	if info.jobID != "" {
 		s.restoreJob(info.jobID)

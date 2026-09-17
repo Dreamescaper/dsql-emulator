@@ -123,6 +123,18 @@ conflict never runs. What does work is bounding the wait.
    predicate; an `INSERT ... VALUES` states its own count and needs no shadow;
    a locking `SELECT` is re-run with the locking clause removed, so the client
    gets its rows.
+
+   A shadow keeps the parameters it still refers to and is bound with the
+   values the client bound for them, which is what makes the shape application
+   code actually writes work. They are **renumbered from `$1`**, because
+   PostgreSQL infers a parameter's type from where it is used and cannot type
+   one the shadow no longer mentions: `UPDATE t SET v = $1 WHERE id = $2`
+   becomes `SELECT count(*) FROM t WHERE id = $1`, bound with the client's
+   second value. No parameter types are declared, because every parameter a
+   shadow keeps sits in the expression it was already used in and so is
+   inferred from the same context. A parameter used both in a dropped clause
+   and a kept one could in principle be inferred differently; the shadow then
+   fails and the conflict is reported at the statement.
 4. The transaction is marked doomed and fails at `COMMIT` with
    `40001 change conflicts with another transaction (OC000)`.
 
@@ -142,11 +154,9 @@ statement on purpose, and it is what DSQL does too.
 - **Some statements keep PostgreSQL's behavior.** A statement whose answer the
   emulator cannot reproduce exactly is not answered with a fabricated one: the
   conflict is reported where PostgreSQL raised it, with DSQL's wording and
-  SQLSTATE. That covers parameterised statements (the bound values belong to
-  the statement that was refused, not to the shadow that would replace it),
-  `RETURNING`, `INSERT ... SELECT`, `ON CONFLICT`, and multi-statement simple
-  queries. Closing the parameterised case means capturing parameter types from
-  the backend's `ParameterDescription` so a shadow can declare them.
+  SQLSTATE. That covers `RETURNING`, `INSERT ... SELECT`, `ON CONFLICT`, and
+  multi-statement simple queries. The same fallback catches a shadow that fails
+  for any other reason, so nothing is ever answered from a guess.
 - **`lock_timeout` applies to every statement**, not only to DML. A DDL that
   cannot take its lock in time is reported as a conflict too. DSQL does not
   wait for a DDL lock either, so this errs toward its model rather than

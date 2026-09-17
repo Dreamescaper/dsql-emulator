@@ -6,7 +6,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, and the record is fresh.** A multi-statement simple
+**Every milestone is done, and the record is fresh.** The OCC adjudicator
+handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
 rather than by a PostgreSQL syntax error. The baseline was
 re-recorded against the cluster on 2026-09-17 and the emulator matches all 212
@@ -47,6 +48,68 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### The adjudicator handles parameterised statements (2026-09-17)
+
+A conflict on `UPDATE t SET v = $1 WHERE id = $2` was reported at the statement
+rather than at `COMMIT`, because the shadow that answers a refused statement is
+a different statement and could not carry the client's bound values. That left
+the shape application code actually writes as the one shape the adjudicator
+declined, in a feature whose point is letting an application test its retry loop.
+
+The plan was to capture parameter type OIDs from the backend's
+`ParameterDescription` so a shadow could declare them. **That turned out to be
+unnecessary.** The problem it solved is that PostgreSQL cannot infer a type for a
+parameter the shadow no longer mentions — `SELECT count(*) FROM t WHERE id = $2`
+leaves `$1` declared and unused, which is an error. Renumbering removes the
+problem instead of working around it: the shadow keeps only the parameters it
+still refers to, renumbered from `$1`, and records which of the client's
+positions those were. `UPDATE t SET v = $1 WHERE id = $2` becomes
+`SELECT count(*) FROM t WHERE id = $1`, bound with the client's second value.
+
+No parameter types are declared at all. Every parameter a shadow keeps sits in
+the expression it was already used in — the `WHERE` clause is carried over
+verbatim — so it is inferred from the same context as in the statement that was
+refused. This also means no new protocol machinery: no `Describe` tracking, no
+`ParameterDescription` interception, no per-statement type cache.
+
+Files: `internal/occ/occ.go`, `internal/occ/occ_test.go`,
+`internal/proxy/adjudicator.go`, `internal/proxy/adjudicator_test.go`,
+`internal/proxy/session.go`, `test/integration/occ_test.go`, `docs/PLAN.md`,
+`README.md`.
+
+**Verification.** `TestOccAdjudicatesParameterisedStatements` runs four shapes
+against a container, with pgx binding integers in binary format: a parameterised
+`UPDATE`, one with several predicate parameters renumbered together, a
+parameterised `DELETE`, and a parameterised `SELECT ... FOR UPDATE` that must
+still return its row. Each loser's statement succeeds with the right command
+tag, does not block, and fails at `COMMIT` with `40001`.
+`TestSessionRunsAParameterisedShadowWithTheBoundValues` pins the wiring at the
+protocol level: the backend receives the renumbered shadow and a Bind carrying
+the row's id, not the value the `SET` list dropped.
+
+```
+$ make build && make vet && make test
+ok  	github.com/Dreamescaper/dsql-emulator/internal/occ	0.682s
+ok  	github.com/Dreamescaper/dsql-emulator/internal/proxy	1.779s
+
+$ make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	21.187s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	25.015s
+
+$ go test -race -count=1 ./...
+(no races)
+```
+
+`TestSessionReportsTheConflictWhenTheShadowFails` was added alongside: it covers
+the fallback every remaining limitation rests on, which had been claimed but
+never tested. A shadow that cannot run leaves the conflict reported where
+PostgreSQL raised it, with DSQL's wording, and the transaction failed.
+
+**Deliberate limitation.** A parameter used both in a clause the shadow drops
+and one it keeps could be inferred as a different type than the client encoded
+it for. The shadow then fails and the conflict is reported at the statement,
+which is the behavior the statement would have had anyway.
 
 ### The ASYNC keyword comes off with the scanner, not a regex (2026-09-17)
 
@@ -1633,6 +1696,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Renumber a shadow's parameters instead of declaring their types | The planned `ParameterDescription` capture existed only to keep an unused parameter typeable. Dropping the unused ones removes the need, and with it a `Describe` tracker, an OID cache, and a dependency on the client having described the statement at all. |
+| 2026-09-17 | Let the backend infer the shadow's parameter types | A kept parameter sits in the expression it was already used in, so inference sees the same context. Where it cannot, the shadow fails into the existing fallback rather than guessing. |
 | 2026-09-17 | Find the ASYNC keyword with `pg_query.Scan`, not a regex | The lexer tokenizes what the grammar rejects, so the keyword's bounds and the statement boundaries both come from the real scanner. This is what a multi-statement query needed, and it removes the last text-matching mechanism from the rewrite path. |
 | 2026-09-17 | Disambiguate ASYNC by the token that follows it | `ALTER TABLE async ADD COLUMN b int` is a table named async, not the dialect's form; an action keyword follows a name, an identifier follows the keyword. |
 | 2026-09-17 | Count CommandCompletes to place the job id | A multi-statement query answers once per statement, and splicing the job row onto the first one would be a quieter wrong answer than the syntax error being fixed. |
@@ -1696,14 +1761,14 @@ with zero protocol assumptions.
 
 Every milestone is done, the adjudicator included. What remains:
 
-### 1. Parameterised statements in the adjudicator
+### 1. Multi-statement probe coverage
 
-A conflict on `UPDATE t SET v = $1 WHERE id = $2` is still reported at the
-statement, because the shadow that would answer it cannot carry the client's
-bound values. Capturing parameter type OIDs from the backend's
-`ParameterDescription` would let a shadow declare them and be bound with the
-client's own values, since deparsing preserves the parameter numbering. This is
-the common shape in application code, so it is the most valuable thing left.
+`Observe` uses the extended protocol, which carries one statement per Parse, so
+no probe can send a multi-statement simple query and nothing records what DSQL
+answers for one. The emulator's behavior there is inferred from its own recorded
+transaction rules. A `Case.SimpleProtocol` flag routed through
+`PgConn().Exec` would close it; the probes cost a metered run, so they are worth
+folding into the next one rather than spending a run on.
 
 ### 2. Smaller items
 

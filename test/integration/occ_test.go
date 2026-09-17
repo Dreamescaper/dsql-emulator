@@ -246,6 +246,128 @@ func TestOccLeavesDisjointWorkAlone(t *testing.T) {
 	}
 }
 
+// TestOccAdjudicatesParameterisedStatements covers the shape application code
+// actually writes. The shadow that answers a refused statement is a different
+// statement, so it keeps only the parameters it still refers to and is bound
+// with the values the client bound for those.
+func TestOccAdjudicatesParameterisedStatements(t *testing.T) {
+	ctx := context.Background()
+	dsn := startEmulator(t, ctx)
+
+	setup, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer setup.Close(ctx)
+
+	for _, sql := range []string{
+		`CREATE TABLE occ_param (id int PRIMARY KEY, k int NOT NULL, name text NOT NULL)`,
+		`INSERT INTO occ_param (id, k, name) VALUES (1, 7, 'a'), (2, 7, 'b'), (3, 7, 'c'), (4, 7, 'd')`,
+	} {
+		if _, err := setup.Exec(ctx, sql); err != nil {
+			t.Fatalf("setup %q: %v", sql, err)
+		}
+	}
+
+	tests := []struct {
+		name string
+		// winner takes the lock; loser must be answered rather than made to wait.
+		winner     string
+		winnerArgs []any
+		loser      string
+		loserArgs  []any
+		wantTag    string
+		wantRows   int
+	}{
+		{
+			name:       "the set list is dropped and the predicate is bound",
+			winner:     `UPDATE occ_param SET name = $1 WHERE id = $2`,
+			winnerArgs: []any{"w", 1},
+			loser:      `UPDATE occ_param SET name = $1 WHERE id = $2`,
+			loserArgs:  []any{"l", 1},
+			wantTag:    "UPDATE 1",
+		},
+		{
+			name:       "several predicate parameters are renumbered together",
+			winner:     `UPDATE occ_param SET name = $1 WHERE id = $2 AND k = $3`,
+			winnerArgs: []any{"w", 2, 7},
+			loser:      `UPDATE occ_param SET name = $1 WHERE id = $2 AND k = $3`,
+			loserArgs:  []any{"l", 2, 7},
+			wantTag:    "UPDATE 1",
+		},
+		{
+			name:       "a parameterised delete",
+			winner:     `UPDATE occ_param SET name = $1 WHERE id = $2`,
+			winnerArgs: []any{"w", 3},
+			loser:      `DELETE FROM occ_param WHERE id = $1`,
+			loserArgs:  []any{3},
+			wantTag:    "DELETE 1",
+		},
+		{
+			name:       "a parameterised locking select keeps its rows",
+			winner:     `UPDATE occ_param SET name = $1 WHERE id = $2`,
+			winnerArgs: []any{"w", 4},
+			loser:      `SELECT name FROM occ_param WHERE id = $1 FOR UPDATE`,
+			loserArgs:  []any{4},
+			wantTag:    "SELECT 1",
+			wantRows:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, b := connectPair(t, ctx, dsn)
+
+			if _, err := execStep(t, ctx, a, "BEGIN"); err != nil {
+				t.Fatalf("session a begin: %v", err)
+			}
+			if _, err := a.Exec(ctx, tt.winner, tt.winnerArgs...); err != nil {
+				t.Fatalf("session a statement: %v", err)
+			}
+
+			if _, err := execStep(t, ctx, b, "BEGIN"); err != nil {
+				t.Fatalf("session b begin: %v", err)
+			}
+
+			// The losing statement succeeds and reports what it would have done.
+			started := time.Now()
+			stepCtx, cancel := context.WithTimeout(ctx, stepTimeout)
+			rows, err := b.Query(stepCtx, tt.loser, tt.loserArgs...)
+			var tag string
+			var scanned int
+			if err == nil {
+				for rows.Next() {
+					scanned++
+				}
+				err = rows.Err()
+				tag = rows.CommandTag().String()
+				rows.Close()
+			}
+			cancel()
+			if elapsed := time.Since(started); elapsed >= stepTimeout {
+				t.Fatalf("the losing statement blocked for %s", elapsed)
+			}
+			if err != nil {
+				t.Fatalf("session b statement failed instead of being deferred to commit: %v", err)
+			}
+			if tag != tt.wantTag {
+				t.Errorf("got command tag %q want %q", tag, tt.wantTag)
+			}
+			if scanned != tt.wantRows {
+				t.Errorf("got %d rows want %d", scanned, tt.wantRows)
+			}
+
+			if _, err := execStep(t, ctx, a, "COMMIT"); err != nil {
+				t.Fatalf("the first committer should succeed: %v", err)
+			}
+
+			_, err = execStep(t, ctx, b, "COMMIT")
+			assertSQLState(t, err, "40001")
+			assertConflictMessage(t, err)
+		})
+	}
+}
+
 // A conflict outside an explicit transaction has no commit to be deferred to,
 // so the statement itself reports it, with Aurora DSQL's wording.
 func TestOccReportsConflictOnImplicitTransaction(t *testing.T) {

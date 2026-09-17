@@ -95,9 +95,9 @@ conn, err := pgx.Connect(ctx, dsn)
   transaction loses is therefore decided when the rows are asked for rather than
   when they are committed, so a transaction that commits in a different order
   than it wrote can lose where DSQL would not. A doomed transaction does not
-  read its own writes. A conflict on a parameterised statement, a `RETURNING`,
-  an `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is
-  reported at the statement rather than at `COMMIT`.
+  read its own writes. A conflict on a `RETURNING`, an `INSERT ... SELECT`, an
+  `ON CONFLICT` or a multi-statement query is reported at the statement rather
+  than at `COMMIT`.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
