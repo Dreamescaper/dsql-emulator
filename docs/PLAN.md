@@ -422,7 +422,16 @@ rather than assumed.
 - `test/conformance` replays the same suite through the emulator and diffs it
   against that record. It needs Docker but never touches a cluster.
 
-The comparison enforces outcome, SQLSTATE, command tag, and rows. Error
+A case may set `SimpleProtocol`, which sends each step as a simple query rather
+than through the extended protocol. That is the only way a step can hold more
+than one statement — what `psql -c 'a; b'` sends — and the extended protocol
+carries one statement per Parse, so nothing else in the suite reaches that path.
+Every statement's answer is recorded, because the interesting one is rarely the
+first: a `BEGIN; CREATE INDEX ASYNC ...; COMMIT` has to show the `job_id` on the
+index build's own result rather than on the `BEGIN`.
+
+The comparison enforces outcome, SQLSTATE, command tag, and rows, and for a
+multi-statement step each of those per statement. Error
 *messages* are reported but advisory, because server wording drifts. A case may
 set `IgnoreRows` (generated ids, `version()`) or `KnownGap` (an accepted
 divergence); known gaps are reported and not enforced. Cases the emulator runs

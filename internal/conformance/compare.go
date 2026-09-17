@@ -184,6 +184,25 @@ func compareObservations(golden, emulated RecordedCase, session int, steps []str
 		if !emulated.IgnoreRows && rows(w.Rows) != rows(g.Rows) {
 			add(i, "rows", rows(w.Rows), rows(g.Rows), false)
 		}
+
+		// A step that sent several statements answered once per statement.
+		if len(w.Results) != len(g.Results) {
+			add(i, "result_count", fmt.Sprint(len(w.Results)), fmt.Sprint(len(g.Results)), false)
+			continue
+		}
+		for n := range w.Results {
+			wr, gr := w.Results[n], g.Results[n]
+			field := func(name string) string { return fmt.Sprintf("result %d %s", n, name) }
+			if wr.CommandTag != gr.CommandTag && !(emulated.IgnoreRows && isRowCountTag(wr.CommandTag)) {
+				add(i, field("command_tag"), wr.CommandTag, gr.CommandTag, false)
+			}
+			if !equalStrings(wr.Columns, gr.Columns) {
+				add(i, field("columns"), join(wr.Columns), join(gr.Columns), false)
+			}
+			if !emulated.IgnoreRows && rows(wr.Rows) != rows(gr.Rows) {
+				add(i, field("rows"), rows(wr.Rows), rows(gr.Rows), false)
+			}
+		}
 	}
 
 	return diffs

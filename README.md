@@ -153,7 +153,7 @@ make conformance        # diff the emulator against the record, needs Docker onl
 
 `make baseline` needs `DSQL_HOST` and `DSQL_TOKEN`, and is the only command that
 talks to a cluster. Probes cover the dialect, types, transactions, queries,
-concurrency, and the connection environment. Conflicting concurrency cases are
+concurrency, multi-statement queries, and the connection environment. Conflicting concurrency cases are
 replayed and enforced like the rest: which transaction loses is a race on both
 sides, so what is checked is that one lost, with the same SQLSTATE, at the step
 the conflict surfaces at.

@@ -675,3 +675,71 @@ func TestSaveNoticesAnEarlierStepInARaceCase(t *testing.T) {
 		t.Error("a changed row count before the commit went unnoticed")
 	}
 }
+
+// multiCase builds a case whose single step sent several statements.
+func multiCase(ignoreRows bool, results ...conformance.Result) conformance.RecordedCase {
+	return conformance.RecordedCase{
+		Case: conformance.Case{
+			Name: "m", Group: "multi_statement", SimpleProtocol: true,
+			Steps: []string{"BEGIN; SELECT 1; COMMIT"}, IgnoreRows: ignoreRows,
+		},
+		Observations: []conformance.Observation{{Outcome: "ok", Results: results}},
+	}
+}
+
+// A step that sent several statements answered once per statement, and each
+// answer is enforced: the interesting one is rarely the first.
+func TestCompareChecksEveryStatementOfAMultiStatementStep(t *testing.T) {
+	tests := []struct {
+		name    string
+		golden  conformance.RecordedCase
+		emulate conformance.RecordedCase
+		want    string
+	}{
+		{
+			name:    "a statement that answered nothing",
+			golden:  multiCase(false, conformance.Result{CommandTag: "BEGIN"}, conformance.Result{CommandTag: "SELECT 1"}),
+			emulate: multiCase(false, conformance.Result{CommandTag: "BEGIN"}),
+			want:    "result_count",
+		},
+		{
+			name:    "a different tag on the second statement",
+			golden:  multiCase(false, conformance.Result{CommandTag: "BEGIN"}, conformance.Result{CommandTag: "CREATE INDEX"}),
+			emulate: multiCase(false, conformance.Result{CommandTag: "BEGIN"}, conformance.Result{CommandTag: "SELECT 1"}),
+			want:    "result 1 command_tag",
+		},
+		{
+			name:    "a column that appeared on the second statement",
+			golden:  multiCase(false, conformance.Result{CommandTag: "BEGIN"}, conformance.Result{CommandTag: "CREATE INDEX"}),
+			emulate: multiCase(false, conformance.Result{CommandTag: "BEGIN"}, conformance.Result{CommandTag: "CREATE INDEX", Columns: []string{"job_id"}}),
+			want:    "result 1 columns",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diffs := conformance.Failures(conformance.Compare(tt.golden, tt.emulate))
+			if len(diffs) == 0 {
+				t.Fatalf("expected a difference in %s", tt.want)
+			}
+			if diffs[0].Field != tt.want {
+				t.Fatalf("got field %q want %q", diffs[0].Field, tt.want)
+			}
+		})
+	}
+}
+
+// A generated job id rides on one of those statements, so IgnoreRows has to
+// reach inside them too.
+func TestCompareIgnoresMultiStatementRowsWhenAsked(t *testing.T) {
+	golden := multiCase(true,
+		conformance.Result{CommandTag: "BEGIN"},
+		conformance.Result{CommandTag: "CREATE INDEX", Columns: []string{"job_id"}, Rows: [][]string{{"srnwmlngyfhcndf5g2e6f3a3xm"}}})
+	emulated := multiCase(true,
+		conformance.Result{CommandTag: "BEGIN"},
+		conformance.Result{CommandTag: "CREATE INDEX", Columns: []string{"job_id"}, Rows: [][]string{{"77014860-8193-95f5-d5ae-d8e80a35b166"}}})
+
+	if diffs := conformance.Failures(conformance.Compare(golden, emulated)); len(diffs) != 0 {
+		t.Fatalf("generated ids must not be enforced, got %v", diffs)
+	}
+}

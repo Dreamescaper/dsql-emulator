@@ -26,6 +26,17 @@ type Observation struct {
 	CommandTag string     `json:"command_tag,omitempty"`
 	Columns    []string   `json:"columns,omitempty"`
 	Rows       [][]string `json:"rows,omitempty"`
+	// Results holds one entry per statement when the step sent several, which
+	// only a simple query can do. The fields above then carry the error, if the
+	// query raised one.
+	Results []Result `json:"results,omitempty"`
+}
+
+// Result is what one statement of a multi-statement simple query answered.
+type Result struct {
+	CommandTag string     `json:"command_tag,omitempty"`
+	Columns    []string   `json:"columns,omitempty"`
+	Rows       [][]string `json:"rows,omitempty"`
 }
 
 // RecordedCase pairs a probe with what the target did for each of its steps.
@@ -100,6 +111,43 @@ func Observe(ctx context.Context, conn *pgx.Conn, sql string) Observation {
 	return obs
 }
 
+// ObserveSimple runs one step as a simple query, which is the only way to send
+// several statements at once -- what `psql -c 'a; b'` does. Every statement's
+// result is captured, because the interesting part is often the second one.
+func ObserveSimple(ctx context.Context, conn *pgx.Conn, sql string) Observation {
+	results, err := conn.PgConn().Exec(ctx, sql).ReadAll()
+	if err != nil {
+		return failedObservation(err)
+	}
+
+	obs := Observation{Outcome: "ok"}
+	for _, res := range results {
+		one := Result{CommandTag: res.CommandTag.String()}
+		for _, fd := range res.FieldDescriptions {
+			one.Columns = append(one.Columns, string(fd.Name))
+		}
+		for _, row := range res.Rows {
+			one.Rows = append(one.Rows, formatRawValues(row))
+		}
+		obs.Results = append(obs.Results, one)
+	}
+	return obs
+}
+
+// formatRawValues renders a row the way a value read through pgx is rendered,
+// so a multi-statement result reads like any other.
+func formatRawValues(row [][]byte) []string {
+	out := make([]string, len(row))
+	for i, v := range row {
+		if v == nil {
+			out[i] = "NULL"
+			continue
+		}
+		out[i] = string(v)
+	}
+	return out
+}
+
 // RunSuite applies the schema, probes every case, and cleans up. Cleanup runs
 // even when the run fails, so a cluster is left as it was found.
 func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options) (*Golden, error) {
@@ -151,8 +199,12 @@ func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options)
 			recorded.SessionResults = sessions
 			progress("recorded %-28s %s", c.Name, summarizeSessions(sessions))
 		default:
+			observe := Observe
+			if c.SimpleProtocol {
+				observe = ObserveSimple
+			}
 			for _, sql := range c.Steps {
-				recorded.Observations = append(recorded.Observations, Observe(ctx, conn, sql))
+				recorded.Observations = append(recorded.Observations, observe(ctx, conn, sql))
 			}
 			// Any case can leave a transaction open, or aborted. Reset so the
 			// next case starts clean; a ROLLBACK with nothing to undo is
@@ -257,9 +309,18 @@ func summarize(observations []Observation) string {
 		if i > 0 {
 			summary += " | "
 		}
-		if obs.Outcome == "error" {
+		switch {
+		case obs.Outcome == "error":
 			summary += "error " + obs.SQLState
-		} else {
+		case len(obs.Results) > 0:
+			// A step that sent several statements answered once per statement.
+			for n, res := range obs.Results {
+				if n > 0 {
+					summary += " + "
+				}
+				summary += res.CommandTag
+			}
+		default:
 			summary += obs.CommandTag
 		}
 	}

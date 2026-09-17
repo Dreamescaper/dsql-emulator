@@ -35,6 +35,10 @@ type Case struct {
 	// RecordOnly cases are recorded against a real cluster but never replayed
 	// against the emulator, because it cannot reproduce them.
 	RecordOnly bool `json:"record_only,omitempty"`
+	// SimpleProtocol sends each step as a simple query rather than through the
+	// extended protocol, which is the only way a step can hold more than one
+	// statement -- what `psql -c 'a; b'` sends.
+	SimpleProtocol bool `json:"simple_protocol,omitempty"`
 	// ConflictRace marks a case whose loser is decided by a race. The record
 	// pins which transaction lost; the replay only has to lose as many, with
 	// the same SQLSTATE, at the step the conflict surfaces at.
@@ -63,6 +67,11 @@ func setupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_bulk",
 		"DROP TABLE IF EXISTS baseline_drop_me",
 		"DROP TABLE IF EXISTS baseline_implicit_bulk",
+		"DROP TABLE IF EXISTS baseline_multi",
+		"DROP TABLE IF EXISTS baseline_multi_a",
+		"DROP TABLE IF EXISTS baseline_multi_b",
+		"DROP TABLE IF EXISTS baseline_multi_c",
+		"DROP TABLE IF EXISTS baseline_multi_d",
 		"CREATE TABLE baseline_parent (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)",
 		"CREATE TABLE baseline_child (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), parent_id uuid NOT NULL REFERENCES baseline_parent(id))",
 		"CREATE TABLE baseline_idx (id uuid PRIMARY KEY, value text)",
@@ -73,6 +82,7 @@ func setupStatements() []string {
 		"CREATE TABLE baseline_alter_big (big bigint, note text)",
 		"CREATE TABLE baseline_alter_fk (id int PRIMARY KEY, parent_id uuid)",
 		"CREATE TABLE baseline_implicit_bulk (id int)",
+		"CREATE TABLE baseline_multi (id int PRIMARY KEY, a int)",
 		"INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000aa', 'seed')",
 		"CREATE TABLE baseline_conflict (id uuid PRIMARY KEY, name text NOT NULL)",
 		"CREATE TABLE baseline_conflict_child (id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES baseline_conflict(id))",
@@ -86,6 +96,13 @@ func setupStatements() []string {
 
 func cleanupStatements() []string {
 	return []string{
+		// A multi-statement probe that is refused creates nothing, because the
+		// whole query is one transaction; these are dropped in case one is not.
+		"DROP TABLE IF EXISTS baseline_multi",
+		"DROP TABLE IF EXISTS baseline_multi_a",
+		"DROP TABLE IF EXISTS baseline_multi_b",
+		"DROP TABLE IF EXISTS baseline_multi_c",
+		"DROP TABLE IF EXISTS baseline_multi_d",
 		// Tables that reference another table must go first.
 		"DROP TABLE IF EXISTS baseline_alter_fk",
 		"DROP TABLE IF EXISTS baseline_alter_pk",
@@ -235,6 +252,7 @@ func DefaultSuite() Suite {
 	cases = append(cases, queryCases()...)
 	cases = append(cases, alterCases()...)
 	cases = append(cases, occConflictCases()...)
+	cases = append(cases, multiStatementCases()...)
 
 	return Suite{
 		Name:    "dsql-baseline",
@@ -450,6 +468,33 @@ func queryCases() []Case {
 		{Name: "q_with_recursive", Group: "queries", Steps: one("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n FROM t ORDER BY 1")},
 		{Name: "q_aggregate_filter", Group: "queries", Steps: one("SELECT count(*) FILTER (WHERE name = 'seed') FROM baseline_parent")},
 		{Name: "q_merge", Group: "queries", Steps: one("MERGE INTO baseline_idx t USING baseline_parent s ON t.id = '00000000-0000-0000-0000-0000000000a1' WHEN MATCHED THEN UPDATE SET value = 'x'")},
+	}
+}
+
+// multiStatementCases cover what `psql -c 'a; b'` sends: one simple query
+// holding several statements, which the extended protocol cannot express, so
+// nothing else in the suite reaches this path. Each is sent as a simple query
+// and every statement's result is recorded.
+func multiStatementCases() []Case {
+	return []Case{
+		{Name: "multi_two_selects", Group: "multi_statement", SimpleProtocol: true,
+			Note:  "confirm a multi-statement simple query runs at all, and answers once per statement",
+			Steps: one("SELECT 1 AS a; SELECT 2 AS b")},
+		{Name: "multi_two_ddl", Group: "multi_statement", SimpleProtocol: true,
+			Note:  "two DDL in one implicit transaction, without the ASYNC keyword in play",
+			Steps: one("CREATE TABLE baseline_multi_a (id int); CREATE TABLE baseline_multi_b (id int)")},
+		{Name: "multi_ddl_then_dml", Group: "multi_statement", SimpleProtocol: true,
+			Note:  "DDL and DML in one implicit transaction",
+			Steps: one("CREATE TABLE baseline_multi_c (id int); INSERT INTO baseline_multi_c (id) VALUES (1)")},
+		{Name: "multi_ddl_then_async_index", Group: "multi_statement", SimpleProtocol: true,
+			Note:  "the shape psql -c sends: a table and its index in one query",
+			Steps: one("CREATE TABLE baseline_multi_d (id int); CREATE INDEX ASYNC baseline_multi_d_idx ON baseline_multi_d (id)")},
+		{Name: "multi_async_index_in_txn", Group: "multi_statement", SimpleProtocol: true, IgnoreRows: true,
+			Note:  "one DDL in an explicit transaction: does the job id ride on the index build's own result?",
+			Steps: one("BEGIN; CREATE INDEX ASYNC baseline_multi_idx ON baseline_multi (a); COMMIT")},
+		{Name: "multi_dml_in_txn", Group: "multi_statement", SimpleProtocol: true,
+			Note:  "an explicit transaction of DML in one query",
+			Steps: one("BEGIN; INSERT INTO baseline_multi (id, a) VALUES (1, 1); COMMIT")},
 	}
 }
 

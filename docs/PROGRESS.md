@@ -49,6 +49,55 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### The suite can probe multi-statement queries (2026-09-17)
+
+`Observe` ran every step through the extended protocol, which carries one
+statement per Parse, so no probe could send `a; b` and nothing recorded what
+Aurora DSQL answers for one. That was a hole under the multi-statement ASYNC
+work shipped earlier today: the emulator's behavior there was inferred from its
+own recorded transaction rules rather than measured.
+
+A case can now set `SimpleProtocol`, which sends each step through
+`PgConn().Exec(...).ReadAll()` instead. `Observation` gains `Results`, one entry
+per statement, because the interesting answer is rarely the first one — and the
+comparison enforces the tag, columns and rows of each.
+
+Six probes were added as the `multi_statement` group: two `SELECT`s (does a
+multi-statement query run at all, and answer once per statement), two DDL, DDL
+then DML, a table and its `CREATE INDEX ASYNC` in one query, the same index
+build inside `BEGIN`/`COMMIT`, and an explicit transaction of DML.
+
+Files: `internal/conformance/record.go`, `internal/conformance/suite.go`,
+`internal/conformance/compare.go`, `internal/conformance/conformance_test.go`,
+`docs/PLAN.md`, `README.md`.
+
+**Verification.** The probes run against the emulator, and the harness captures
+what they exist to capture — the `job_id` rides on the index build's own result,
+not on the `BEGIN`:
+
+```
+recorded multi_two_selects            SELECT 1 + SELECT 1
+recorded multi_two_ddl                error 0A000
+recorded multi_ddl_then_dml           error 0A000
+recorded multi_ddl_then_async_index   error 0A000
+recorded multi_async_index_in_txn     BEGIN + CREATE INDEX + COMMIT
+recorded multi_dml_in_txn             BEGIN + INSERT 0 1 + COMMIT
+
+multi_async_index_in_txn => [{"outcome":"ok","results":[
+  {"command_tag":"BEGIN"},
+  {"command_tag":"CREATE INDEX","columns":["job_id"],"rows":[["77014860-..."]]},
+  {"command_tag":"COMMIT"}]}]
+```
+
+`make build`, `make vet`, `make test`, `make test-integration` all pass, and the
+existing `212 cases match the golden record`.
+
+**Not done: the probes are unrecorded.** `make conformance` reports them as
+`6 case(s) not covered by the golden record`, which is a log rather than a
+failure, by design. Until a baseline run answers them, what DSQL does with a
+multi-statement query is still unknown — the mechanism to find out exists, the
+answer does not. The run needs a fresh token and costs money.
+
 ### The adjudicator handles parameterised statements (2026-09-17)
 
 A conflict on `UPDATE t SET v = $1 WHERE id = $2` was reported at the statement
@@ -1696,6 +1745,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Record one `Result` per statement rather than one `Observation` per statement | Keeps the step-to-observation mapping the comparison and the diff messages rely on, and keeps a multi-statement step legible as one thing in the record. |
+| 2026-09-17 | Added the probes before recording them | The harness change is what needed reviewing and testing; the answers cost a metered run. An unrecorded probe is reported, not silently passed, so the gap stays visible until it is filled. |
 | 2026-09-17 | Renumber a shadow's parameters instead of declaring their types | The planned `ParameterDescription` capture existed only to keep an unused parameter typeable. Dropping the unused ones removes the need, and with it a `Describe` tracker, an OID cache, and a dependency on the client having described the statement at all. |
 | 2026-09-17 | Let the backend infer the shadow's parameter types | A kept parameter sits in the expression it was already used in, so inference sees the same context. Where it cannot, the shadow fails into the existing fallback rather than guessing. |
 | 2026-09-17 | Find the ASYNC keyword with `pg_query.Scan`, not a regex | The lexer tokenizes what the grammar rejects, so the keyword's bounds and the statement boundaries both come from the real scanner. This is what a multi-statement query needed, and it removes the last text-matching mechanism from the rewrite path. |
@@ -1761,14 +1812,12 @@ with zero protocol assumptions.
 
 Every milestone is done, the adjudicator included. What remains:
 
-### 1. Multi-statement probe coverage
+### 1. Record the multi-statement probes
 
-`Observe` uses the extended protocol, which carries one statement per Parse, so
-no probe can send a multi-statement simple query and nothing records what DSQL
-answers for one. The emulator's behavior there is inferred from its own recorded
-transaction rules. A `Case.SimpleProtocol` flag routed through
-`PgConn().Exec` would close it; the probes cost a metered run, so they are worth
-folding into the next one rather than spending a run on.
+The `multi_statement` group runs against the emulator but has never been
+answered by a cluster, so `make conformance` reports six cases as not covered.
+Folding them into the next baseline run settles what DSQL does with `a; b`, and
+would also answer the two open questions in PLAN.md's backlog.
 
 ### 2. Smaller items
 
