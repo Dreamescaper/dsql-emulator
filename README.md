@@ -99,10 +99,7 @@ conn, err := pgx.Connect(ctx, dsn)
   transaction that reached the rows first as the winner. A doomed transaction
   does not read its own writes. A conflict on a `RETURNING`, an
   `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is reported
-  at the statement rather than at `COMMIT`, and so is one on the first statement
-  of a transaction a client pipelined — Npgsql sends `BEGIN` together with the
-  command that follows it, leaving no gap to prepare the transaction in. Later
-  statements in that transaction are adjudicated normally.
+  at the statement rather than at `COMMIT`.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the

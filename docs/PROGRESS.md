@@ -7,8 +7,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 ## Current status
 
 **Every milestone is done, the record is fresh, and the verification backlog is
-empty.** A pipelining client such as Npgsql is no longer disturbed by the
-adjudicator's savepoint; see issue #1. Every refusal the record
+empty.** A pipelining client such as Npgsql is adjudicated like any other, from
+the first statement of a transaction onwards. Every refusal the record
 holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
 query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
@@ -51,6 +51,73 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### A pipelined transaction's first conflict is adjudicated too (2026-09-18)
+
+The v0.2.1 hotfix left a divergence: a conflict on the first statement of a
+transaction a client pipelined was reported at the statement rather than at
+`COMMIT`, because the client leaves no gap in the stream to establish the
+savepoint a repair rolls back to. Npgsql sends `BEGIN` with the command that
+follows it, so that was the first statement of every Npgsql transaction — the
+common place for an application's retry loop to be exercised.
+
+The gap is closed without waiting on the stream, which is what the hotfix
+declined to add. **A transaction whose only statement is the one being refused
+has nothing to preserve**, so it is repaired by being started again —
+`ROLLBACK; BEGIN` — which needs no savepoint and therefore no gap. A transaction
+that already holds work of its own still needs one, and where it has neither the
+conflict is reported where PostgreSQL raises it rather than discarding what came
+before.
+
+Two things had to change alongside it:
+
+- The statement was only remembered as adjudicable if a savepoint had been
+  established, so the restart path was unreachable. Arming the adjudicator and
+  establishing the savepoint are now separate: the savepoint is taken wherever
+  there is room, and whether the transaction can be recovered at all is decided
+  when a conflict actually arrives.
+- Whether a transaction is open was read from the last `ReadyForQuery`. In
+  pipeline mode none has arrived yet — pgx sends one `Sync` for the whole
+  pipeline — so the emulator believed it was outside a transaction and declined.
+  It now asks the session's own transaction tracker, which is what the client
+  said rather than what the backend has got around to reporting.
+
+A restarted transaction loses the snapshot it had, so a shadow's count can
+differ from DSQL's where the winner changed which rows the predicate matches.
+That is why a savepoint is still preferred wherever the client leaves room.
+
+Files: `internal/proxy/session.go`, `internal/proxy/adjudicator.go`,
+`internal/proxy/adjudicator_test.go`, `test/integration/pipeline_test.go`,
+`README.md`, `docs/PLAN.md`.
+
+**Verification.** With a real Npgsql client, all three cases now hold:
+
+```
+1. error in txn -> 42P01 OK
+2. first statement in txn: conflict at COMMIT 40001 — OK
+3. later statement in txn: conflict at COMMIT 40001 — OK
+```
+
+`TestSessionRestartsATransactionItCouldNotSavepoint` drives the whole path over
+a pipelined batch, and `TestSessionWillNotRestartATransactionHoldingOtherWork`
+pins the guard by pipelining three batches so that the refused statement is the
+second one. `TestPipelinedClientIsNotDisturbed` covers it end to end with pgx's
+pipeline mode.
+
+```
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.789s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	9.534s
+
+$ go test -race -count=1 ./...
+(no races)
+```
+
+Writing the guard test took two attempts worth recording: the first cleared the
+savepoint flag by hand, which the next statement simply re-established, because
+there was a gap. Only pipelining every batch produces a transaction that holds
+work and has no savepoint.
 
 ### Fixed: the adjudicator's savepoint corrupted a pipelining client's stream (2026-09-17)
 
@@ -2099,6 +2166,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | Repair a first-statement conflict by restarting the transaction | It needs no savepoint and therefore no gap in a pipelined stream, and it discards nothing, because the refused statement is all the transaction holds. The alternative was blocking the frontend path until the upstream settled. |
+| 2026-09-18 | Read the transaction state from the tracker, not the last `ReadyForQuery` | A pipelining client can be several statements into a transaction before the backend reports any status. The tracker knows what the client asked for, which is the question being asked. |
 | 2026-09-17 | Inject only from the frontend path, and only into a real gap | Two goroutines write to the upstream, so ordering between an injected statement and a client's is otherwise undefined. The frontend path is the only place that can know where an injected statement falls in the stream. |
 | 2026-09-17 | Skip the savepoint rather than wait for a gap | A pipelining client leaves none at the first statement of a transaction. Waiting would block the frontend path on the backend draining, which is a deadlock surface to add in a hotfix; skipping degrades to reporting the conflict where PostgreSQL raises it. |
 | 2026-09-17 | `occ_multirow_predicate` is a known gap, not a bug to fix | Failing both sides of a conflict needs DSQL's adjudication logic; the emulator borrows PostgreSQL's locks, where the first writer can always commit. Matching it would mean replacing the premise of the OCC layer for one recorded case. |
@@ -2177,11 +2246,6 @@ Every milestone is done, the adjudicator included, and PLAN.md's verification
 backlog is empty. What remains:
 
 ### 1. Smaller items
-
-- A conflict on the first statement of a pipelined transaction is reported at
-  the statement rather than at `COMMIT`, because the client leaves no gap to
-  establish the savepoint in. Closing it means waiting for the upstream to
-  settle on the frontend path.
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).

@@ -102,6 +102,12 @@ type session struct {
 	// a lock, so it fails at COMMIT the way Aurora DSQL fails it.
 	occSavepoint bool
 	occDoomed    bool
+	// occTxnStatements counts the statements admitted in the current
+	// transaction, transaction control aside. When the one being refused is the
+	// only one, the transaction has nothing to preserve, so it can be repaired
+	// by being started again rather than by rolling back to a savepoint the
+	// client left no room to establish.
+	occTxnStatements int
 	// occInFlight is what the statement now executing would report if it is
 	// refused a lock, and occRepair the refused statement waiting for the
 	// ReadyForQuery that ends its failed exchange.
@@ -398,6 +404,7 @@ func (s *session) handleQuery(msg wire.Message) {
 	}
 
 	s.addOccTables(result.Tables)
+	s.countTxnStatement(result.Kinds)
 	if endsTransaction(result.Kinds) {
 		if isCommit(result.Kinds) && (s.occAdjudicated() || s.occCommitConflict()) {
 			s.occFailure(false)
@@ -524,6 +531,7 @@ func (s *session) handleBind(msg wire.Message) {
 	}
 
 	s.addOccTables(info.tables)
+	s.countTxnStatement(info.kinds)
 	if endsTransaction(info.kinds) {
 		if isCommit(info.kinds) && (s.occAdjudicated() || s.occCommitConflict()) {
 			s.occFailure(true)

@@ -127,10 +127,19 @@ conflict never runs. What does work is bounding the wait.
    a simple query destroys the unnamed prepared statement a `Bind` is about to
    use.
 
-   When there is no such gap the transaction goes without a savepoint and its
-   conflicts are reported where PostgreSQL raises them. Npgsql defers its
-   `BEGIN` and sends it with the command that follows, so the first statement of
-   an Npgsql transaction is adjudicated that way and later ones normally.
+   When there is no such gap the transaction goes without a savepoint, and a
+   conflict in it is repaired by **starting the transaction again** —
+   `ROLLBACK; BEGIN` — which is sound for exactly as long as the refused
+   statement is the only one the transaction holds. That is the case a
+   pipelining client creates, because it sends `BEGIN` with the command that
+   follows. A transaction that already holds work of its own cannot be restarted
+   without losing it, so there the conflict is reported where PostgreSQL raises
+   it rather than discarding what came before.
+
+   A restarted transaction loses the snapshot it had, where a savepoint keeps
+   it. The count a shadow reports can therefore differ from DSQL's when the
+   winning transaction changed which rows the predicate matches. This is why a
+   savepoint is preferred wherever the client leaves room for one.
 3. On either code, the emulator rolls back to that savepoint, which leaves the
    transaction usable and its snapshot intact, and answers the refused
    statement the way DSQL answers it: as if it had run. The row count comes
@@ -162,6 +171,10 @@ statement on purpose, and it is what DSQL does too.
 
 ### What adjudication does not reproduce
 
+- **Whether a transaction is open is the tracker's answer, not the last
+  `ReadyForQuery`'s.** A pipelining client can be several statements into a
+  transaction before the backend has reported any status at all, so the
+  adjudicator reads the session's own transaction state.
 - **First writer wins, not first committer.** DSQL fails whichever transaction
   the cluster adjudicates second; the emulator fails whichever asked the
   backend for the row second. The two coincide when a transaction commits in

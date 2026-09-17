@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 
+	"github.com/Dreamescaper/dsql-emulator/internal/classify"
 	"github.com/Dreamescaper/dsql-emulator/internal/occ"
 	"github.com/Dreamescaper/dsql-emulator/internal/wire"
 )
@@ -19,6 +20,11 @@ const savepointName = "dsql_occ"
 var (
 	savepointQuery  = simpleQuery("SAVEPOINT " + savepointName)
 	rollbackToQuery = simpleQuery("ROLLBACK TO SAVEPOINT " + savepointName)
+	// restartQuery repairs a transaction whose only statement was the one that
+	// was refused. There is nothing to preserve, so it is started again instead
+	// of being rolled back to a savepoint; the new transaction inherits
+	// REPEATABLE READ from the connection.
+	restartQuery = simpleQuery("ROLLBACK; BEGIN")
 )
 
 func simpleQuery(sql string) []byte {
@@ -104,14 +110,19 @@ func (s *session) setHidden(h *hiddenExchange) {
 }
 
 // armAdjudicator prepares the transaction to have this statement's conflict
-// deferred to COMMIT: the savepoint that a repair rolls back to is established
-// first, ahead of the statement itself, and the statement is remembered only if
-// that succeeded. A statement the emulator could not answer for needs neither.
+// deferred to COMMIT, establishing the savepoint that a repair rolls back to
+// ahead of the statement itself. A statement the emulator cannot answer for
+// needs neither.
 func (s *session) armAdjudicator(intent *occ.Intent, bind *pgproto3.Bind) {
-	if intent == nil || !s.savepointReady(bind) {
+	if intent == nil {
 		s.setInFlight(nil, nil)
 		return
 	}
+	// A savepoint is established wherever the client left room for one. Without
+	// it a transaction that holds only this statement can still be repaired by
+	// being started again, so the statement is remembered either way and
+	// occIntercept decides whether the transaction can be recovered.
+	s.savepointReady(bind)
 	s.setInFlight(intent, bind)
 }
 
@@ -182,6 +193,25 @@ func (s *session) noteTxStatus(status byte) {
 	s.occSavepoint = false
 	s.occDoomed = false
 	s.occInFlight = nil
+	s.occTxnStatements = 0
+	s.stateMu.Unlock()
+}
+
+// countTxnStatement records a statement against the transaction it runs in, so
+// a repair knows whether the transaction holds anything but the statement being
+// refused. Transaction control starts the count over rather than adding to it.
+func (s *session) countTxnStatement(kinds []classify.Kind) {
+	for _, kind := range kinds {
+		switch kind {
+		case classify.KindBegin, classify.KindCommit, classify.KindRollback:
+			s.stateMu.Lock()
+			s.occTxnStatements = 0
+			s.stateMu.Unlock()
+			return
+		}
+	}
+	s.stateMu.Lock()
+	s.occTxnStatements++
 	s.stateMu.Unlock()
 }
 
@@ -252,13 +282,20 @@ func (s *session) occIntercept(msg wire.Message) bool {
 		return false
 	}
 
+	// Whether a transaction is open is the tracker's to answer, not the last
+	// ReadyForQuery's: a pipelining client can be several statements into one
+	// before the backend has reported any status at all.
+	inTxn := s.tracker.Stats().InTxn
+
 	s.stateMu.Lock()
 	flight := s.occInFlight
-	// Outside a transaction there is nothing to defer the failure to; without a
-	// savepoint there is no way back to a usable one; and with more than the
-	// failed request outstanding the client has pipelined past it, so there is
-	// no gap to run the repair in.
-	ready := s.occSavepoint && s.txStatus == 'T' && flight != nil && s.pendingExchanges <= 1
+	// Outside a transaction there is nothing to defer the failure to, and with
+	// more than the failed request outstanding the client has pipelined past
+	// it, so there is no gap to run the repair in. A usable transaction is
+	// reached either by rolling back to a savepoint or, when the refused
+	// statement is the only one the transaction holds, by starting it again.
+	repairable := s.occSavepoint || s.occTxnStatements <= 1
+	ready := repairable && inTxn && flight != nil && s.pendingExchanges <= 1
 	if ready {
 		s.occRepair = flight
 		s.occInFlight = nil
@@ -298,6 +335,18 @@ func (s *session) startRepair() bool {
 		return false
 	}
 
+	s.stateMu.Lock()
+	restore := rollbackToQuery
+	how := "savepoint"
+	if !s.occSavepoint {
+		// Nothing but the refused statement, so the transaction is started
+		// again. It loses the snapshot it had, which is why a savepoint is
+		// preferred wherever the client left room to establish one.
+		restore, how = restartQuery, "restart"
+		s.occSavepoint = false
+	}
+	s.stateMu.Unlock()
+
 	var failed bool
 	s.setHidden(&hiddenExchange{
 		consume: consumeUntilReady(&failed),
@@ -309,7 +358,8 @@ func (s *session) startRepair() bool {
 			s.runShadow(repair)
 		},
 	})
-	if err := s.writeUpstreamExchange(rollbackToQuery); err != nil {
+	s.logger.Debug("repairing the transaction", "how", how)
+	if err := s.writeUpstreamExchange(restore); err != nil {
 		s.close()
 	}
 	return true

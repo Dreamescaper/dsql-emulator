@@ -471,3 +471,143 @@ func TestSessionEstablishesTheSavepointAheadOfTheParse(t *testing.T) {
 		t.Fatal("a second savepoint was written for the same transaction")
 	}
 }
+
+// A client that pipelines leaves no room to establish a savepoint, so the
+// transaction is repaired by being started again. That is only sound while the
+// refused statement is the only one the transaction holds -- which is exactly
+// the case a pipelining client creates, because it sends BEGIN with the command
+// that follows it.
+func TestSessionRestartsATransactionItCouldNotSavepoint(t *testing.T) {
+	ts := newTestSession(t)
+
+	// BEGIN and the statement reach the backend together, so nothing can be
+	// written between them.
+	for _, msg := range []pgproto3.FrontendMessage{
+		&pgproto3.Parse{Name: "b", Query: "BEGIN"},
+		&pgproto3.Bind{DestinationPortal: "pb", PreparedStatement: "b"},
+		&pgproto3.Execute{Portal: "pb"},
+		&pgproto3.Sync{},
+		&pgproto3.Parse{Name: "u", Query: "UPDATE t SET v = 'x' WHERE id = 1"},
+		&pgproto3.Bind{DestinationPortal: "pu", PreparedStatement: "u"},
+		&pgproto3.Execute{Portal: "pu"},
+		&pgproto3.Sync{},
+	} {
+		ts.send(t, msg)
+		if got := ts.receiveBackend(t); fmt.Sprintf("%T", got) != fmt.Sprintf("%T", msg) {
+			t.Fatalf("backend received %T, want the client's %T", got, msg)
+		}
+	}
+
+	// The BEGIN succeeds.
+	for _, msg := range []pgproto3.BackendMessage{
+		&pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+		&pgproto3.CommandComplete{CommandTag: []byte("BEGIN")},
+		&pgproto3.ReadyForQuery{TxStatus: 'T'},
+	} {
+		ts.sendBackend(t, msg)
+		ts.receive(t)
+	}
+
+	// The statement is refused a lock.
+	ts.sendBackend(t, &pgproto3.ParseComplete{})
+	ts.receive(t)
+	ts.sendBackend(t, &pgproto3.BindComplete{})
+	ts.receive(t)
+	ts.sendBackend(t, &pgproto3.ErrorResponse{Severity: "ERROR", Code: "55P03", Message: "canceling statement due to lock timeout"})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'E'})
+
+	// With no savepoint to return to, the transaction is started again.
+	if got := ts.expectBackendQueryRaw(t); got != "ROLLBACK; BEGIN" {
+		t.Fatalf("backend received %q, want the transaction to be restarted", got)
+	}
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("ROLLBACK")})
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+
+	// The shadow reports what the refused statement would have.
+	if got := ts.expectBackendQueryRaw(t); got != "SELECT count(*) FROM t WHERE id = 1" {
+		t.Fatalf("backend received shadow %q", got)
+	}
+	ts.sendBackend(t, &pgproto3.RowDescription{Fields: []pgproto3.FieldDescription{{Name: []byte("count")}}})
+	ts.sendBackend(t, &pgproto3.DataRow{Values: [][]byte{[]byte("1")}})
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'T'})
+
+	cc, ok := ts.receive(t).(*pgproto3.CommandComplete)
+	if !ok {
+		t.Fatal("expected the refused statement to be answered as if it ran")
+	}
+	if got := string(cc.CommandTag); got != "UPDATE 1" {
+		t.Fatalf("got command tag %q want UPDATE 1", got)
+	}
+	if rfq, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok || rfq.TxStatus != 'T' {
+		t.Fatal("expected the transaction to stay open")
+	}
+
+	// And it fails at COMMIT, where Aurora DSQL fails it.
+	ts.send(t, &pgproto3.Query{String: "COMMIT"})
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected the commit to be refused")
+	}
+	if er.Code != "40001" || !strings.Contains(er.Message, "OC000") {
+		t.Fatalf("got %s %q want 40001 with OC000", er.Code, er.Message)
+	}
+}
+
+// A transaction that holds work of its own cannot be started again without
+// losing it, so without a savepoint the conflict is reported where PostgreSQL
+// raised it rather than silently discarding what came before.
+func TestSessionWillNotRestartATransactionHoldingOtherWork(t *testing.T) {
+	ts := newTestSession(t)
+
+	// Everything is pipelined, so no statement gets a savepoint, and by the
+	// time the second one is refused the transaction holds the first.
+	batches := []pgproto3.FrontendMessage{
+		&pgproto3.Parse{Name: "b", Query: "BEGIN"},
+		&pgproto3.Bind{DestinationPortal: "pb", PreparedStatement: "b"},
+		&pgproto3.Execute{Portal: "pb"},
+		&pgproto3.Sync{},
+		&pgproto3.Parse{Name: "i", Query: "INSERT INTO t (id) VALUES (1)"},
+		&pgproto3.Bind{DestinationPortal: "pi", PreparedStatement: "i"},
+		&pgproto3.Execute{Portal: "pi"},
+		&pgproto3.Sync{},
+		&pgproto3.Parse{Name: "u", Query: "UPDATE t SET v = 'x' WHERE id = 1"},
+		&pgproto3.Bind{DestinationPortal: "pu", PreparedStatement: "u"},
+		&pgproto3.Execute{Portal: "pu"},
+		&pgproto3.Sync{},
+	}
+	for _, msg := range batches {
+		ts.send(t, msg)
+		if got := ts.receiveBackend(t); fmt.Sprintf("%T", got) != fmt.Sprintf("%T", msg) {
+			t.Fatalf("backend received %T, want the client's %T", got, msg)
+		}
+	}
+
+	// The BEGIN and the insert succeed.
+	for range 2 {
+		for _, msg := range []pgproto3.BackendMessage{
+			&pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+			&pgproto3.CommandComplete{CommandTag: []byte("INSERT 0 1")},
+			&pgproto3.ReadyForQuery{TxStatus: 'T'},
+		} {
+			ts.sendBackend(t, msg)
+			ts.receive(t)
+		}
+	}
+
+	// The update is refused a lock, with the insert still to preserve.
+	ts.sendBackend(t, &pgproto3.ParseComplete{})
+	ts.receive(t)
+	ts.sendBackend(t, &pgproto3.BindComplete{})
+	ts.receive(t)
+	ts.sendBackend(t, &pgproto3.ErrorResponse{Severity: "ERROR", Code: "55P03", Message: "canceling statement due to lock timeout"})
+
+	er, ok := ts.receive(t).(*pgproto3.ErrorResponse)
+	if !ok {
+		t.Fatal("expected the conflict to reach the client")
+	}
+	if er.Code != "40001" {
+		t.Fatalf("got %s want 40001", er.Code)
+	}
+}
