@@ -19,7 +19,7 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 222 probes, and the emulator is diffed against it. A
+real cluster answered for 226 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
 silently passing. Every probe in the suite is currently recorded, and the
 emulator matches all of them but two accepted divergences.
@@ -94,9 +94,10 @@ conn, err := pgx.Connect(ctx, dsn)
   had run, and the transaction fails at `COMMIT` the way DSQL fails it. Which
   transaction loses is therefore decided when the rows are asked for rather than
   when they are committed, so a transaction that commits in a different order
-  than it wrote can lose where DSQL would not. DSQL can also reject *every* side
-  of a conflict that spans several rows, where the emulator always leaves the
-  transaction that reached the rows first as the winner. A doomed transaction
+  than it wrote can lose where DSQL would not. For a conflict spanning several
+  rows DSQL has been seen to fail one side on one run and both on another, where
+  the emulator always leaves the transaction that reached the rows first as the
+  winner. A doomed transaction
   does not read its own writes. A conflict on a `RETURNING`, an
   `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is reported
   at the statement rather than at `COMMIT`.

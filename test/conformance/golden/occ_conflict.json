@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-17T15:06:49.773908Z",
+  "recorded_at": "2026-09-17T22:24:00.516835Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -21,9 +21,8 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -36,8 +35,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -63,14 +63,13 @@
             ],
             "rows": [
               [
-                "ww-b"
+                "ww-a"
               ]
             ]
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -83,8 +82,9 @@
             "command_tag": "UPDATE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
@@ -110,13 +110,14 @@
             ],
             "rows": [
               [
-                "fu-b"
+                "ww-a"
               ]
             ]
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ],
         [
@@ -129,9 +130,8 @@
             "command_tag": "DELETE 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ]
       ]
@@ -153,8 +153,9 @@
             "command_tag": "DELETE 1"
           },
           {
-            "outcome": "ok",
-            "command_tag": "COMMIT"
+            "outcome": "error",
+            "sqlstate": "40001",
+            "message": "change conflicts with another transaction (OC000)"
           }
         ],
         [
@@ -167,9 +168,8 @@
             "command_tag": "INSERT 0 1"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "change conflicts with another transaction (OC000)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ]
       ]
@@ -329,6 +329,7 @@
       "group": "occ_conflict",
       "note": "what row count does the loser report when its predicate spans several rows?",
       "steps": null,
+      "known_gap": "DSQL failed both transactions; the emulator leaves the first writer as the winner",
       "conflict_race": true,
       "sessions": [
         [
@@ -341,9 +342,8 @@
             "command_tag": "UPDATE 3"
           },
           {
-            "outcome": "error",
-            "sqlstate": "40001",
-            "message": "schema has been updated by another transaction (OC001)"
+            "outcome": "ok",
+            "command_tag": "COMMIT"
           }
         ],
         [
@@ -358,7 +358,7 @@
           {
             "outcome": "error",
             "sqlstate": "40001",
-            "message": "schema has been updated by another transaction (OC001)"
+            "message": "change conflicts with another transaction (OC000)"
           }
         ]
       ]
