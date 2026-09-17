@@ -952,3 +952,93 @@ func TestSessionDropsJobWhenAsyncIndexFails(t *testing.T) {
 		t.Fatalf("client saw %v, want %v", got, want)
 	}
 }
+
+// A multi-statement simple query is what `psql -c 'a; b'` sends. The dialect's
+// own rule decides it, rather than PostgreSQL's parser refusing the ASYNC
+// keyword it has never heard of.
+func TestSessionAppliesTheRulesToAMultiStatementAsyncQuery(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		code string
+	}{
+		{
+			name: "two DDL in one implicit transaction",
+			sql:  "CREATE TABLE t (id int); CREATE INDEX ASYNC idx ON t (id)",
+			code: "0A000",
+		},
+		{
+			name: "DDL mixed with DML",
+			sql:  "INSERT INTO t (id) VALUES (1); CREATE INDEX ASYNC idx ON t (id)",
+			code: "0A000",
+		},
+		{
+			name: "two asynchronous index builds",
+			sql:  "CREATE INDEX ASYNC a ON t (x); CREATE INDEX ASYNC b ON t (y)",
+			code: "0A000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := newTestSession(t)
+			ts.expectRejectedQuery(t, tt.sql, tt.code)
+
+			_ = ts.backend.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			if n, err := ts.backend.Read(make([]byte, 1)); err == nil {
+				t.Fatalf("the refused query reached the backend (%d bytes)", n)
+			}
+		})
+	}
+}
+
+// One DDL in an explicit transaction is allowed, so the whole query is
+// forwarded and the job id belongs to the statement that carried ASYNC, not to
+// the BEGIN whose CommandComplete arrives first.
+func TestSessionSplicesTheJobOntoItsOwnStatement(t *testing.T) {
+	ts := newTestSession(t)
+
+	const sql = "BEGIN; CREATE INDEX ASYNC idx ON t (a); COMMIT"
+	ts.send(t, &pgproto3.Query{String: sql})
+
+	forwarded := ts.expectBackendQuery(t)
+	forwardedID := markedJobID(t, forwarded)
+	if want := jobMarker(forwardedID) + "BEGIN; CREATE INDEX idx ON t (a); COMMIT"; forwarded != want {
+		t.Fatalf("backend received %q want %q", forwarded, want)
+	}
+
+	// The BEGIN's own result passes through untouched.
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("BEGIN")})
+	begin, ok := ts.receive(t).(*pgproto3.CommandComplete)
+	if !ok {
+		t.Fatal("expected the BEGIN CommandComplete at the client")
+	}
+	if got := string(begin.CommandTag); got != "BEGIN" {
+		t.Fatalf("got tag %q want BEGIN", got)
+	}
+
+	// The index build is answered with the job id.
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("CREATE INDEX")})
+	if _, ok := ts.receive(t).(*pgproto3.RowDescription); !ok {
+		t.Fatal("expected a RowDescription for the job id")
+	}
+	row, ok := ts.receive(t).(*pgproto3.DataRow)
+	if !ok {
+		t.Fatal("expected a DataRow carrying the job id")
+	}
+	if got := string(row.Values[0]); got != forwardedID {
+		t.Fatalf("client got job id %q, but the statement carried %q", got, forwardedID)
+	}
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected the CREATE INDEX CommandComplete at the client")
+	}
+
+	ts.sendBackend(t, &pgproto3.CommandComplete{CommandTag: []byte("COMMIT")})
+	if _, ok := ts.receive(t).(*pgproto3.CommandComplete); !ok {
+		t.Fatal("expected the COMMIT CommandComplete at the client")
+	}
+	ts.sendBackend(t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	if _, ok := ts.receive(t).(*pgproto3.ReadyForQuery); !ok {
+		t.Fatal("expected the ReadyForQuery at the client")
+	}
+}

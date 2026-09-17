@@ -227,13 +227,29 @@ of it on 5432. `docker/init` is what provides `sys.jobs`, the row-cap trigger, a
 role clients connect as, so a container started from this image enforces the
 same rules as the test suite with no extra setup.
 
-`CREATE INDEX ASYNC` is rewritten textually because libpg_query cannot parse the
-`ASYNC` keyword; everything after it, including a `WHERE` predicate, an
-`INCLUDE` list, or `NULLS NOT DISTINCT`, is forwarded untouched, and the
-qualified-name check happens before anything is sent. The rewrite is anchored to
-a whole statement, so a multi-statement simple query that contains
-`CREATE INDEX ASYNC` is not rewritten; PostgreSQL then rejects it with a syntax
-error instead of DSQL's error.
+`CREATE INDEX ASYNC` has to be rewritten before libpg_query will parse it,
+because the grammar has no `ASYNC` keyword. The keyword is found with
+PostgreSQL's own scanner rather than by matching text: the lexer reads it as an
+ordinary identifier even though the grammar rejects the statement, so the token
+stream gives its exact bounds. Everything after it, including a `WHERE`
+predicate, an `INCLUDE` list, or `NULLS NOT DISTINCT`, is forwarded untouched,
+and the qualified-name check happens before anything is sent.
+
+Working from tokens is what makes a multi-statement simple query — what
+`psql -c 'a; b'` sends — behave: the scanner knows where each statement ends, so
+the keyword comes off wherever it sits and the dialect's own rules decide the
+query, rather than PostgreSQL's parser refusing a keyword it has never heard of.
+Two DDL in one such query are refused with `0A000` like any other pair. It also
+keeps the word from being mistaken for the keyword inside a string literal, a
+comment, or a quoted identifier, and settles where it is genuinely ambiguous:
+`ALTER TABLE async ADD COLUMN b int` is a table named `async`, because every
+`ALTER TABLE` action that can follow a name begins with a keyword, where the
+dialect's form is followed by the table's name.
+
+A simple query holding several statements answers with one result each, so the
+emulator records which statement carried the keyword and splices the synthesized
+`job_id` onto that statement's own `CommandComplete` rather than onto the first
+one's.
 
 `sys.jobs` records an `INDEX_BUILD` job for every `CREATE INDEX ASYNC`, because
 an event trigger registered for `CREATE INDEX` fires for explicit index

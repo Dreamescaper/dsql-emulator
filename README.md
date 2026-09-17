@@ -82,7 +82,7 @@ conn, err := pgx.Connect(ctx, dsn)
 | Dialect | Forty-five rules over a real parse tree: `TRUNCATE`, extensions, triggers, extra databases, temporary and unlogged tables, `serial`, materialized views, `CREATE TABLE AS`, custom types, tablespaces, foreign tables, `VACUUM`, `LISTEN`/`NOTIFY`, `ALTER SYSTEM`, `MERGE`, `TABLESAMPLE`, text search, geometric types, and more |
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
 | Types | The documented supported set including aliases, identity columns and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them. The list applies to a column added by `ALTER TABLE ADD COLUMN` as well as one a `CREATE TABLE` declares |
-| Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
+| Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`, in a single statement or in a multi-statement query such as `psql -c 'a; b'` sends; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
 | `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. `ALTER COLUMN ... TYPE` is refused whatever the target type, and dropping a primary-key column is refused. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused |
 | OCC | Conflicts adjudicated at `COMMIT` without waiting for locks, reported as `40001 change conflicts with another transaction (OC000)`, across write-write, `FOR UPDATE`, `FOR KEY SHARE` and foreign-key overlap; plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
@@ -100,11 +100,6 @@ conn, err := pgx.Connect(ctx, dsn)
   reported at the statement rather than at `COMMIT`.
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
-- **The `ASYNC` rewrite matches whole statements.** A multi-statement simple
-  query containing `CREATE INDEX ASYNC` — what `psql -c 'a; b'` sends — is not
-  rewritten, so PostgreSQL rejects it with a syntax error where DSQL reports its
-  own error (usually `0A000`, since it refuses more than one DDL per
-  transaction).
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
   columns, statuses, and `sys.wait_for_job` being a procedure. DSQL also records

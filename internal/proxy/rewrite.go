@@ -3,51 +3,140 @@ package proxy
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"regexp"
 	"strconv"
 	"strings"
+
+	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
 
-var (
-	// asyncIndexPattern matches the ASYNC keyword that Aurora DSQL requires on
-	// CREATE INDEX but PostgreSQL's parser does not understand, and
-	// asyncAlterPattern the one on the ALTER TABLE form the dialect uses to
-	// validate a constraint in the background.
-	//
-	// Stripping the keyword is textual because libpg_query rejects the
-	// statement outright; everything after that is decided on a real parse tree
-	// of what is left, so these are the only patterns the dialect needs.
-	asyncIndexPattern = regexp.MustCompile(`(?is)^(\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+)ASYNC\s+`)
-	asyncAlterPattern = regexp.MustCompile(`(?is)^(\s*ALTER\s+TABLE\s+)ASYNC\s+`)
-)
-
-// stripAsync removes the ASYNC keyword matched by pattern, reporting whether
-// the statement carried it.
-func stripAsync(pattern *regexp.Regexp, sql string) (string, bool) {
-	if !pattern.MatchString(sql) {
-		return "", false
-	}
-	rewritten := pattern.ReplaceAllString(sql, "${1}")
-	if strings.EqualFold(rewritten, sql) {
-		return "", false
-	}
-	return rewritten, true
-}
-
-// parseAsyncIndex recognises CREATE INDEX ASYNC and strips the keyword, leaving
-// a statement PostgreSQL can parse and the ruleset can be applied to.
+// stripAsync removes the ASYNC keyword Aurora DSQL requires on CREATE INDEX and
+// on the ALTER TABLE form that validates a constraint in the background, and
+// reports which statement carried it.
 //
-// A schema-qualified index name is left in place on purpose. Aurora DSQL's
-// grammar does not accept one — the index always lands in the table's schema —
-// and neither does PostgreSQL's, so forwarding the stripped statement produces
-// the same `42601 syntax error at or near "."` the dialect reports.
-func parseAsyncIndex(sql string) (string, bool) {
-	return stripAsync(asyncIndexPattern, sql)
+// PostgreSQL's grammar rejects the keyword, but its lexer does not: to the
+// scanner ASYNC is an ordinary identifier, so the token stream gives the
+// keyword's exact bounds even though the statement will not parse. Working from
+// tokens rather than from the text is what lets a simple query holding several
+// statements be rewritten -- the scanner knows where each one ends -- and it
+// cannot mistake the word for one inside a string literal, a comment, or a
+// quoted identifier such as an index actually named "ASYNC".
+//
+// The ordinal it returns is the statement the job belongs to, counted in
+// CommandComplete messages, so the synthesized job id is spliced onto the
+// asynchronous statement's own result rather than onto the first one's.
+func stripAsync(sql string) (rewritten string, statement int, ok bool) {
+	scanned, err := pg_query.Scan(sql)
+	if err != nil {
+		return "", 0, false
+	}
+
+	var cuts [][2]int32
+	found := -1
+	for ordinal, stmt := range statements(scanned.GetTokens()) {
+		at := asyncKeyword(sql, stmt.tokens)
+		if at < 0 {
+			continue
+		}
+		if found < 0 {
+			found = ordinal
+		}
+		// Cut through to the next token, so the space the keyword sat in goes
+		// with it and the statement reads as though it had been written
+		// without it.
+		through := stmt.tokens[at].GetEnd()
+		if at+1 < len(stmt.tokens) {
+			through = stmt.tokens[at+1].GetStart()
+		}
+		cuts = append(cuts, [2]int32{stmt.tokens[at].GetStart(), through})
+	}
+	if found < 0 {
+		return "", 0, false
+	}
+
+	var out strings.Builder
+	prev := int32(0)
+	for _, cut := range cuts {
+		out.WriteString(sql[prev:cut[0]])
+		prev = cut[1]
+	}
+	out.WriteString(sql[prev:])
+	return out.String(), found, true
 }
 
-// parseAsyncAlterTable recognises ALTER TABLE ASYNC and strips the keyword.
-func parseAsyncAlterTable(sql string) (string, bool) {
-	return stripAsync(asyncAlterPattern, sql)
+// statement is one statement's tokens within a simple query that may hold
+// several.
+type statement struct {
+	tokens []*pg_query.ScanToken
+}
+
+// statements splits a token stream on the semicolons that separate statements.
+func statements(tokens []*pg_query.ScanToken) []statement {
+	var out []statement
+	start := 0
+	for i, tok := range tokens {
+		if tok.GetToken() != pg_query.Token_ASCII_59 {
+			continue
+		}
+		out = append(out, statement{tokens: tokens[start:i]})
+		start = i + 1
+	}
+	return append(out, statement{tokens: tokens[start:]})
+}
+
+// asyncKeyword returns the index of the ASYNC keyword in a statement that opens
+// with a form the dialect spells with it, and -1 for anything else.
+//
+// What follows the word decides it, because ASYNC sits exactly where an object
+// name is otherwise written. In `ALTER TABLE async ADD COLUMN b int` the word is
+// a table called async, and every ALTER TABLE action that could follow a name
+// begins with a keyword; the dialect's form is followed by the table's name
+// instead. A CREATE INDEX is read the same way, against the three things that
+// can follow the keyword there.
+func asyncKeyword(sql string, tokens []*pg_query.ScanToken) int {
+	switch tokenAt(tokens, 0) {
+	case pg_query.Token_CREATE:
+		at := 1
+		if tokenAt(tokens, at) == pg_query.Token_UNIQUE {
+			at++
+		}
+		if tokenAt(tokens, at) != pg_query.Token_INDEX || !isAsync(sql, tokens, at+1) {
+			return -1
+		}
+		switch tokenAt(tokens, at+2) {
+		// The index's name, IF NOT EXISTS, or an index with no name at all.
+		case pg_query.Token_IDENT, pg_query.Token_IF_P, pg_query.Token_ON:
+			return at + 1
+		}
+	case pg_query.Token_ALTER:
+		if tokenAt(tokens, 1) != pg_query.Token_TABLE || !isAsync(sql, tokens, 2) {
+			return -1
+		}
+		if tokenAt(tokens, 3) == pg_query.Token_IDENT {
+			return 2
+		}
+	}
+	return -1
+}
+
+func tokenAt(tokens []*pg_query.ScanToken, i int) pg_query.Token {
+	if i < 0 || i >= len(tokens) {
+		return pg_query.Token_NUL
+	}
+	return tokens[i].GetToken()
+}
+
+// isAsync reports whether the token is the bare word ASYNC. A quoted identifier
+// carries its quotes in the scanned text, so an index named "ASYNC" is left
+// alone.
+func isAsync(sql string, tokens []*pg_query.ScanToken, i int) bool {
+	if tokenAt(tokens, i) != pg_query.Token_IDENT {
+		return false
+	}
+	tok := tokens[i]
+	if tok.GetStart() < 0 || int(tok.GetEnd()) > len(sql) {
+		return false
+	}
+	return strings.EqualFold(sql[tok.GetStart():tok.GetEnd()], "async")
 }
 
 // jobMarker returns the comment that carries a job id down to the backing

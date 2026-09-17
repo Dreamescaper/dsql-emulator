@@ -274,7 +274,7 @@ func (s *session) pumpBackend() {
 				}
 				continue
 			}
-			if result := s.takeJob(); result != nil {
+			if result := s.claimJob(); result != nil {
 				if !result.described {
 					s.writeClient(jobIDRowDescription())
 				}
@@ -354,12 +354,8 @@ func (s *session) handleQuery(msg wire.Message) {
 		return
 	}
 
-	if rewritten, ok := parseAsyncIndex(query.String); ok {
-		s.forwardAsyncJob(msg, query, rewritten, false)
-		return
-	}
-	if rewritten, ok := parseAsyncAlterTable(query.String); ok {
-		s.forwardAsyncJob(msg, query, rewritten, false)
+	if rewritten, statement, ok := stripAsync(query.String); ok {
+		s.forwardAsyncJob(msg, query, rewritten, statement, false)
 		return
 	}
 
@@ -422,12 +418,10 @@ func (s *session) handleParse(msg wire.Message) {
 		return
 	}
 
-	if rewritten, ok := parseAsyncIndex(parse.Query); ok {
-		s.forwardAsyncJob(msg, parse, rewritten, true)
-		return
-	}
-	if rewritten, ok := parseAsyncAlterTable(parse.Query); ok {
-		s.forwardAsyncJob(msg, parse, rewritten, true)
+	// An extended-protocol Parse carries one statement, so the job is always
+	// the first result.
+	if rewritten, _, ok := stripAsync(parse.Query); ok {
+		s.forwardAsyncJob(msg, parse, rewritten, 0, true)
 		return
 	}
 
@@ -839,7 +833,7 @@ func (s *session) rewriteParameterStatus(msg wire.Message) bool {
 // that validates a constraint in the background. The keyword has already been
 // stripped, so rewritten is a statement the ruleset can be applied to; it is
 // then forwarded with a job id marker and answered with that id.
-func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten string, extended bool) {
+func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMessage, rewritten string, statement int, extended bool) {
 	if s.aborted() {
 		s.rejectFailed(extended)
 		return
@@ -873,7 +867,7 @@ func (s *session) forwardAsyncJob(msg wire.Message, frontend pgproto3.FrontendMe
 	marked := jobMarker(jobID) + rewritten
 
 	s.stateMu.Lock()
-	s.job = &jobResult{jobID: jobID}
+	s.job = &jobResult{jobID: jobID, precedingTags: statement}
 	s.stateMu.Unlock()
 
 	switch m := frontend.(type) {
@@ -960,6 +954,9 @@ type statementInfo struct {
 type jobResult struct {
 	described bool
 	jobID     string
+	// precedingTags is how many CommandComplete messages belong to statements
+	// ahead of the asynchronous one, in a simple query that holds several.
+	precedingTags int
 }
 
 func (s *session) markJobDescribed() bool {
@@ -970,6 +967,23 @@ func (s *session) markJobDescribed() bool {
 	}
 	s.job.described = true
 	return true
+}
+
+// claimJob yields the synthesized result when the CommandComplete now going by
+// is the asynchronous statement's own, and counts down the ones before it.
+func (s *session) claimJob() *jobResult {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.job == nil {
+		return nil
+	}
+	if s.job.precedingTags > 0 {
+		s.job.precedingTags--
+		return nil
+	}
+	result := s.job
+	s.job = nil
+	return result
 }
 
 func (s *session) takeJob() *jobResult {

@@ -6,7 +6,9 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, and the record is fresh.** The baseline was
+**Every milestone is done, and the record is fresh.** A multi-statement simple
+query spelled with `CREATE INDEX ASYNC` is now answered by the dialect's rules
+rather than by a PostgreSQL syntax error. The baseline was
 re-recorded against the cluster on 2026-09-17 and the emulator matches all 212
 cases against it, the adjudicator included. A baseline run now rewrites only the
 fixtures whose answers changed — measured by what the record enforces, so a
@@ -45,6 +47,71 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### The ASYNC keyword comes off with the scanner, not a regex (2026-09-17)
+
+A multi-statement simple query holding `CREATE INDEX ASYNC` — what
+`psql -c 'a; b'` sends — reached PostgreSQL with the keyword still on it and
+came back as a syntax error, where Aurora DSQL answers with its own rule. The
+two regexes that stripped the keyword were anchored to the start of the string,
+so only a lone statement ever matched.
+
+Both are replaced by PostgreSQL's own scanner. `pg_query.Scan` tokenizes a
+string the grammar will not parse — to the lexer `ASYNC` is an ordinary
+identifier — so the token stream gives the keyword's exact bounds *and* the
+statement boundaries. The keyword now comes off wherever it sits, the query
+parses, and the dialect's rules decide it: two DDL in one query are refused with
+`0A000` like any other pair.
+
+**Two bugs fell out of it**, both present in the regexes:
+
+- `ALTER TABLE async ADD COLUMN b int` — a table actually named `async` — was
+  mangled into `ALTER TABLE ADD COLUMN b int`. The token shape settles it: every
+  `ALTER TABLE` action that can follow a name begins with a keyword, where the
+  dialect's form is followed by the table's name. A test for it is what caught
+  this.
+- The word inside a string literal, a comment, or a dollar-quoted body was
+  matchable in principle; the scanner cannot confuse those for a keyword.
+
+A simple query answers with one result per statement, so `jobResult` now records
+how many results precede the asynchronous one and `claimJob` counts them down.
+Without it the synthesized `job_id` row would have spliced onto the `BEGIN` of
+`BEGIN; CREATE INDEX ASYNC ...; COMMIT` — a quieter wrong answer than the syntax
+error it replaced, which is why it was worth doing rather than deferring.
+
+Files: `internal/proxy/rewrite.go`, `internal/proxy/rewrite_test.go`,
+`internal/proxy/session.go`, `internal/proxy/session_test.go`,
+`test/integration/async_test.go`, `docs/PLAN.md`, `README.md`.
+
+**Verification.** `TestMultiStatementAsyncQuery` drives the real path against a
+container: two DDL in one query and DDL mixed with DML are both refused with
+`0A000`, and `BEGIN; CREATE INDEX ASYNC async_idx ON async_t (a); COMMIT` is
+accepted, returns three results, carries the `job_id` on the second one, builds
+the index, and records a `completed` job under that id.
+
+Reading all three results needs `PgConn().Exec(...).ReadAll()`: pgx's own
+`Query` surfaces only the first result of a multi-statement query, which is what
+made the first version of the test fail while the emulator was already correct.
+
+```
+$ make build && make vet && make test
+ok  	github.com/Dreamescaper/dsql-emulator/internal/proxy	1.110s
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	0.567s
+
+$ make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	4.004s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	6.521s
+
+$ go test -race -count=1 ./...
+(no races)
+```
+
+**Deliberate limitation.** The conformance suite cannot cover this: `Observe`
+uses the extended protocol, which carries one statement per Parse, so no probe
+can send a multi-statement query and no recording says what DSQL answers for
+one. The refusals the emulator now gives come from its own transaction rules,
+which are themselves recorded; that a real cluster answers a multi-statement
+query the same way is inferred, not measured.
 
 ### The README describes the product, not the diff (2026-09-17)
 
@@ -1566,6 +1633,9 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | Find the ASYNC keyword with `pg_query.Scan`, not a regex | The lexer tokenizes what the grammar rejects, so the keyword's bounds and the statement boundaries both come from the real scanner. This is what a multi-statement query needed, and it removes the last text-matching mechanism from the rewrite path. |
+| 2026-09-17 | Disambiguate ASYNC by the token that follows it | `ALTER TABLE async ADD COLUMN b int` is a table named async, not the dialect's form; an action keyword follows a name, an identifier follows the keyword. |
+| 2026-09-17 | Count CommandCompletes to place the job id | A multi-statement query answers once per statement, and splicing the job row onto the first one would be a quieter wrong answer than the syntax error being fixed. |
 | 2026-09-17 | The README states current behavior only; history lives in this log | A delta is only legible to someone who knows the previous state, which no reader of a README has. Written into `AGENTS.md` so it is a rule rather than a review comment. |
 | 2026-09-17 | Change detection waives what the comparison waives | The first real re-recording rewrote two fixtures for nothing but generated job ids. A record that is not enforced on a value should not be rewritten for it either. |
 | 2026-09-17 | Restored the two fixtures the fixed rule would not have written | The run found nothing in them; leaving the rewrite in would have put exactly the diff this work exists to remove into the record's history. |
