@@ -52,6 +52,67 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Job ids are shaped the way Aurora DSQL shapes them (2026-09-18)
+
+`CREATE INDEX ASYNC` handed back a dashed UUID where DSQL hands back 26
+characters such as `tpqrncdmjja4tdl3zxo2qqvh4y`. Same information, different
+width, and a client that stores the id in a column of its own — or asserts its
+length — finds one thing against the emulator and another against a cluster.
+
+**The shape was derived from the record rather than guessed.** Ten job ids sit
+in the golden fixtures. Across their 260 characters, all 32 characters of the
+RFC 4648 base32 lowercase alphabet appear, and none of `0`, `1`, `8` or `9` ever
+does — which rules out Crockford's base32, whose alphabet excludes `i`, `l`, `o`
+and `u` that these ids contain. Unpadded, sixteen bytes come to exactly 26
+characters: the same 128 bits a UUID carries, which is what
+`CALL sys.wait_for_job('no-such-job')` answering
+`22P02 Unable to convert text to UUID` was already telling us — the id is
+decoded, not compared as text.
+
+So the emulator now issues `base32(sixteen random bytes)`, lowercased and
+unpadded, and `sys.wait_for_job` refuses anything that is not of that shape with
+DSQL's message rather than casting to `uuid` to get there.
+
+**The marker comment is unchanged.** The id still rides down to the backing
+database on the statement itself, and the event trigger still reads it out of
+`current_query()`; only the pattern it matches changed. That mechanism was
+always independent of what the id looks like.
+
+Three places have to agree on the shape — what the emulator generates, what the
+event trigger matches out of the marker, and what `sys.wait_for_job` accepts —
+and two of them are SQL in init scripts that no compiler checks against the Go.
+`jobIDPattern` is now the one description of it, and a test reads both init
+scripts to confirm they carry the same literal, so the next change to it cannot
+drift them apart.
+
+Files: `internal/proxy/rewrite.go`, `internal/proxy/rewrite_test.go`,
+`internal/proxy/session_test.go`, `docker/init/01-sys.sql`,
+`docker/init/04-jobs.sql`, `test/integration/async_test.go`, `README.md`,
+`docs/PLAN.md`.
+
+**Verification.**
+
+```
+$ make build && make vet && make test
+8 packages ok
+
+$ make test-integration
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.298s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.803s
+```
+
+The container-backed tests exercise the whole path: an async index build returns
+an id of the new shape, the backing database records a job under it from the
+marker comment, and `CALL sys.wait_for_job(<that id>)` finds it — three existing
+tests already call it with a real id, which is what confirms the shape check did
+not break the case it has to let through. `'no-such-job'` still answers `22P02`
+with DSQL's wording.
+
+**Note for anyone running an old container.** The marker pattern and
+`sys.wait_for_job` live in init scripts, so they apply to a database created
+after this. An existing one will not match the new ids, and an async statement
+against it records no job.
+
 ### Recorded the identity probes, and the multi-row gap turned out to be a race (2026-09-18)
 
 A fresh token and a quiet cluster gave the clean run the previous three did not:
@@ -2305,6 +2366,9 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | Job ids are base32 of sixteen bytes, not UUIDs | Derived from the ten ids in the record: the full RFC 4648 alphabet appears and 0/1/8/9 never do. The width is what a client sees, and matching it costs nothing. |
+| 2026-09-18 | `sys.wait_for_job` checks the shape instead of casting to `uuid` | The cast was how the verified `22P02` was reproduced, and it only worked while ids were dashed UUIDs. Checking the shape reproduces the same message for the same inputs and accepts the ids the emulator now issues. |
+| 2026-09-18 | One `jobIDPattern`, with a test reading the init scripts | Three places have to agree and two of them are SQL that no compiler checks against the Go. |
 | 2026-09-18 | `occ_multirow_predicate` keeps its `KnownGap`, with a different reason | A second recording disagreed with the first about how many transactions lose. There is no stable outcome to assert, so the case is recorded and replayed but not enforced -- which is what the flag is for. |
 | 2026-09-18 | Wrote the identity rules on two discarded runs' evidence | Both reached the cluster and agreed, early and before either went wrong. Waiting for a clean recording would leave the emulator more permissive than DSQL in the meantime, which is the direction that lets a suite pass and a deployment fail. The probes stay unrecorded so the gap is visible. |
 | 2026-09-18 | Retry a setup or cleanup statement on `40001`, never a probe's step | DSQL adjudicates DDL and asks clients to retry; a suite that gives up throws away a metered run over expected behaviour. A probe's answer is the thing being recorded, so retrying one would record the retry instead. |

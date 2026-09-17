@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base32"
 	"strconv"
 	"strings"
 
@@ -147,21 +147,31 @@ func jobMarker(jobID string) string {
 	return "/* dsql_job=" + jobID + " */ "
 }
 
-// newJobID returns the identifier for one asynchronous statement. It is a UUID
-// because sys.wait_for_job converts an id to one, and reports anything else as
-// malformed rather than unknown.
+// jobIDEncoding renders sixteen bytes as the 26 characters Aurora DSQL uses for
+// a job id. Every one of base32's 32 lowercase characters appears across the
+// ids in the golden record and none of 0, 1, 8 or 9 ever does, which is the
+// RFC 4648 alphabet rather than Crockford's; unpadded, sixteen bytes come to
+// exactly 26 characters, the same 128 bits a UUID carries.
+var jobIDEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// jobIDPattern is the shape of a job id. The backing database matches the same
+// shape out of the marker comment, and sys.wait_for_job refuses anything else
+// the way Aurora DSQL refuses it, so the three are kept in step by this one
+// description of it.
+const jobIDPattern = `[a-z2-7]{26}`
+
+// JobIDLength is how many characters a job id has.
+const JobIDLength = 26
+
+// newJobID returns the identifier for one asynchronous statement, shaped the
+// way Aurora DSQL shapes one so that a client storing it in a column of its own
+// finds the same width against either.
 func newJobID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "00000000-0000-0000-0000-000000000000"
+		return strings.Repeat("a", JobIDLength)
 	}
-	return uuidAsText(buf)
-}
-
-// uuidAsText shapes sixteen random bytes as a UUID.
-func uuidAsText(buf [16]byte) string {
-	h := hex.EncodeToString(buf[:])
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+	return strings.ToLower(jobIDEncoding.EncodeToString(buf[:]))
 }
 
 // serverVersionNum encodes a version the way PostgreSQL's server_version_num

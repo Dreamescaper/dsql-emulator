@@ -4,7 +4,7 @@
 -- a job visible once the work is done.
 --
 -- The emulator picks the job id, hands it to the client, and passes it down in
--- a marker comment on the statement itself: `/* dsql_job=<uuid> */ CREATE
+-- a marker comment on the statement itself: `/* dsql_job=<job id> */ CREATE
 -- INDEX ...`. That is one statement and no extra round trip, and it works for a
 -- statement that names no object, such as an unnamed index, where an id derived
 -- from the object name would have had nothing to derive from. Each build gets
@@ -30,7 +30,7 @@ DECLARE
     job_type text;
 BEGIN
     marker := regexp_match(current_query(),
-        'dsql_job=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})');
+        'dsql_job=([a-z2-7]{26})');
 
     FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
         object_name := NULL;

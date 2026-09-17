@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -195,19 +198,41 @@ func TestServerVersionNum(t *testing.T) {
 	}
 }
 
-// An opaque job id has to be a UUID like a derived one, because wait_for_job
-// converts an id to a UUID before it looks it up.
-func TestNewJobIDIsAUUID(t *testing.T) {
-	id := newJobID()
-	if len(id) != 36 {
-		t.Fatalf("got %q (%d chars) want 36", id, len(id))
+// A job id is shaped the way Aurora DSQL shapes one -- 26 base32 characters,
+// as in the tpqrncdmjja4tdl3zxo2qqvh4y the golden record holds -- so a client
+// that stores one in a column of its own finds the same width against either.
+func TestNewJobIDMatchesTheShapeDSQLUses(t *testing.T) {
+	shape := regexp.MustCompile(`^[a-z2-7]{26}$`)
+
+	seen := make(map[string]bool, 64)
+	for range 64 {
+		id := newJobID()
+		if !shape.MatchString(id) {
+			t.Fatalf("got %q (%d chars), want 26 characters of lowercase base32", id, len(id))
+		}
+		if seen[id] {
+			t.Fatalf("two job ids came out the same: %q", id)
+		}
+		seen[id] = true
 	}
-	for _, i := range []int{8, 13, 18, 23} {
-		if id[i] != '-' {
-			t.Fatalf("got %q, want a dash at index %d", id, i)
+}
+
+// The shape the emulator writes, the shape the backing database reads out of
+// the marker comment, and the shape sys.wait_for_job accepts all have to agree.
+// The init scripts carry the same pattern as a literal, so this reads them.
+func TestJobIDShapeAgreesWithTheInitScripts(t *testing.T) {
+	for _, script := range []string{"01-sys.sql", "04-jobs.sql"} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "docker", "init", script))
+		if err != nil {
+			t.Fatalf("read %s: %v", script, err)
+		}
+		if !strings.Contains(string(body), jobIDPattern) {
+			t.Errorf("%s does not carry the job id shape %s", script, jobIDPattern)
 		}
 	}
-	if id == newJobID() {
-		t.Fatal("two opaque job ids must differ")
+
+	// And the shape actually matches what the emulator generates.
+	if !regexp.MustCompile("^" + jobIDPattern + "$").MatchString(newJobID()) {
+		t.Error("a generated job id does not match the shape the init scripts read")
 	}
 }

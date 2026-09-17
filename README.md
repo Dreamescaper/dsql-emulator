@@ -105,9 +105,8 @@ conn, err := pgx.Connect(ctx, dsn)
   trust-configured, so any password connects. Nothing checks the token.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the
   index synchronously and records a completed `INDEX_BUILD` job, matching DSQL's
-  columns, statuses, and `sys.wait_for_job` being a procedure. DSQL also records
-  `ANALYZE` and `DROP` jobs, which the emulator does not, and its ids are 26
-  characters (`tpqrncdmjja4tdl3zxo2qqvh4y`) where the emulator's are UUIDs. One
+  columns, statuses, job id shape, and `sys.wait_for_job` being a procedure.
+  DSQL also records `ANALYZE` and `DROP` jobs, which the emulator does not. One
   case returns an id with no row:
   `CREATE INDEX ASYNC IF NOT EXISTS` on an index that already exists builds
   nothing, so there is no job to record.

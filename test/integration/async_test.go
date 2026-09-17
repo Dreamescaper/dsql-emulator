@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -66,8 +67,9 @@ func TestMultiStatementAsyncQuery(t *testing.T) {
 			t.Fatalf("the index build carried %v, want one job id", results[1].Rows)
 		}
 		jobID := string(results[1].Rows[0][0])
-		if len(jobID) != 36 {
-			t.Fatalf("got job id %q, want a UUID", jobID)
+		// 26 characters of lowercase base32, the shape Aurora DSQL uses.
+		if !regexp.MustCompile(`^[a-z2-7]{26}$`).MatchString(jobID) {
+			t.Fatalf("got job id %q, want 26 characters of lowercase base32", jobID)
 		}
 
 		// The index really was built, and the job recorded under that id.

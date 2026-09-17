@@ -707,7 +707,7 @@ func markedJobID(t *testing.T, sql string) string {
 	return m[1]
 }
 
-var jobMarkerPattern = regexp.MustCompile(`dsql_job=([0-9a-f-]{36})`)
+var jobMarkerPattern = regexp.MustCompile(`dsql_job=(` + jobIDPattern + `)`)
 
 func TestSessionReturnsJobIDForAsyncValidateConstraint(t *testing.T) {
 	ts := newTestSession(t)
