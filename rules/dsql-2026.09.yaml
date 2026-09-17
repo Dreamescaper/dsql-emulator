@@ -226,6 +226,16 @@ unsupported:
     code: "0A000"
     message: "unsupported ALTER TABLE ADD CONSTRAINT statement"
 
+  # Reported in issue #3: a key constraint cannot be added to a table that
+  # exists. The USING INDEX form is left alone, because the recorded
+  # alter_unique_using_index probe shows DSQL accepting the statement and
+  # complaining about the index instead.
+  - id: alter_add_key_constraint
+    stmt: alter_table_stmt
+    add_constraint_type: ["CONSTR_PRIMARY", "CONSTR_UNIQUE"]
+    code: "0A000"
+    message: "unsupported ALTER TABLE ADD CONSTRAINT statement"
+
   - id: alter_validate_requires_async
     stmt: alter_table_stmt
     alter_action: ["AT_ValidateConstraint"]

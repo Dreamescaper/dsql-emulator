@@ -64,6 +64,9 @@ type Rule struct {
 	// AddConstraintMissingNotValid matches an ALTER TABLE that adds a CHECK or
 	// FOREIGN KEY without the NOT VALID the dialect requires.
 	AddConstraintMissingNotValid bool `yaml:"add_constraint_missing_not_valid"`
+	// AddConstraintType matches an ALTER TABLE that adds a constraint of one of
+	// these kinds, naming them as libpg_query does.
+	AddConstraintType []string `yaml:"add_constraint_type"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`

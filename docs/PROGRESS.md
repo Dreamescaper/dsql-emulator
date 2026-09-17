@@ -52,6 +52,61 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Refuse ALTER TABLE ADD CONSTRAINT ... PRIMARY KEY, and probe composite rows (2026-09-18)
+
+Two reports, and only one of them can be acted on yet.
+
+**Issue #3 — a key cannot be added to a table that exists.** The emulator
+accepted `ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY (id)`; DSQL refuses it
+with `0A000 unsupported ALTER TABLE ADD CONSTRAINT statement`. A schema script
+that declares tables first and adds keys afterwards therefore loaded against the
+emulator and failed partway through against a cluster, with the tables already
+created.
+
+The record pinned the shape of the rule before it was written. `UNIQUE` sounds
+like it belongs in the same refusal, but `alter_unique_using_index` — recorded
+against the cluster — shows DSQL taking
+`ADD CONSTRAINT ... UNIQUE USING INDEX` as far as `55000 index is not valid`,
+which is a complaint about the index rather than about the statement. So the
+rule matches a key constraint only when it is not adopting an index that already
+exists, and the tests pin both halves.
+
+**Issue #4 — composite row values.** Reported as
+`42804 attribute 1 of type "Orders" has wrong type` against a cluster, from a
+nested projection an ORM generates. Four probes were written for it:
+`q_row_constructor`, `q_row_comparison`, `q_whole_row_reference` and
+`q_whole_row_in_subquery`. All four pass on the emulator today, which is the
+divergence the report describes.
+
+**No rule was written for #4, on purpose.** Which row values DSQL rejects is not
+something the record says, and the report's own suggestion notes a probe would
+pin it. A rule guessed from one ORM-generated query would refuse some shapes the
+cluster accepts, and an emulator that fails working code is a worse failure than
+one that misses a divergence: the first blocks development, the second surfaces
+later. The probes make it answerable in one run.
+
+Files: `rules/rules.go`, `rules/dsql-2026.09.yaml`, `internal/classify/eval.go`,
+`internal/classify/classify_test.go`, `internal/conformance/suite.go`,
+`README.md`, `docs/PLAN.md`.
+
+**Verification.**
+
+```
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.245s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.903s
+```
+
+The emulator refuses both key-constraint forms with DSQL's code and message,
+forwards both `USING INDEX` forms, and leaves `CHECK`/`FOREIGN KEY ... NOT VALID`
+alone. `226 cases match the golden record`, with the six new probes reported as
+not covered.
+
+**Still open.** Record the six probes. The token expired before a run could be
+made, so #3's rule rests on the message quoted in the report plus the exception
+the record already pins, and #4 has probes and no rule.
+
 ### Job ids are shaped the way Aurora DSQL shapes them (2026-09-18)
 
 `CREATE INDEX ASYNC` handed back a dashed UUID where DSQL hands back 26
@@ -2366,6 +2421,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | The key-constraint rule exempts `USING INDEX` | The record shows DSQL reaching `55000 index is not valid` for that form, which means the statement is accepted and the index is the problem. A blanket refusal would have contradicted a recorded probe. |
+| 2026-09-18 | No rule for composite row values, only probes | Which shapes DSQL rejects is unrecorded, and a rule guessed from one ORM query would refuse some the cluster accepts. An emulator that fails working code blocks development; one that misses a divergence surfaces it later. |
 | 2026-09-18 | Job ids are base32 of sixteen bytes, not UUIDs | Derived from the ten ids in the record: the full RFC 4648 alphabet appears and 0/1/8/9 never do. The width is what a client sees, and matching it costs nothing. |
 | 2026-09-18 | `sys.wait_for_job` checks the shape instead of casting to `uuid` | The cast was how the verified `22P02` was reproduced, and it only worked while ids were dashed UUIDs. Checking the shape reproduces the same message for the same inputs and accepts the ids the emulator now issues. |
 | 2026-09-18 | One `jobIDPattern`, with a test reading the init scripts | Three places have to agree and two of them are SQL that no compiler checks against the Go. |
@@ -2452,7 +2509,13 @@ with zero protocol assumptions.
 Every milestone is done, the adjudicator included, and PLAN.md's verification
 backlog is empty. What remains:
 
-### 1. Smaller items
+### 1. Record the six new probes
+
+`alter_add_pk_constraint` and `alter_add_unique_constraint` confirm issue #3's
+refusal, and the four `q_row_*` probes answer issue #4, which has no rule until
+they do. One run settles both.
+
+### 2. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).

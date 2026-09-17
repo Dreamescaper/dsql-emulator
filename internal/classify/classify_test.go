@@ -410,3 +410,59 @@ func TestClassifyRefusesNonBigintIdentityOnAlter(t *testing.T) {
 		t.Fatalf("a bigint identity column was refused: %s", result.Verdict.Message)
 	}
 }
+
+// Aurora DSQL's ALTER TABLE cannot add a key constraint to a table that already
+// exists; the key has to be declared with the table. Reported as issue #3: a
+// schema script that adds primary keys afterwards passes against the emulator
+// and fails partway through against a cluster, once the tables are already
+// there.
+func TestClassifyRefusesAlterTableAddKeyConstraint(t *testing.T) {
+	c := newClassifier(t)
+
+	refused := []string{
+		"ALTER TABLE t ADD CONSTRAINT pk_t PRIMARY KEY (id)",
+		"ALTER TABLE t ADD PRIMARY KEY (id)",
+		"ALTER TABLE t ADD CONSTRAINT uq_t UNIQUE (a, b)",
+		"ALTER TABLE t ADD UNIQUE (a)",
+	}
+	for _, sql := range refused {
+		t.Run(sql, func(t *testing.T) {
+			result, err := c.Classify(sql)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if !result.Verdict.Rejected() {
+				t.Fatalf("%q was accepted", sql)
+			}
+			if result.Verdict.Code != "0A000" {
+				t.Errorf("got SQLSTATE %q want 0A000", result.Verdict.Code)
+			}
+			if want := "unsupported ALTER TABLE ADD CONSTRAINT statement"; result.Verdict.Message != want {
+				t.Errorf("got %q want %q", result.Verdict.Message, want)
+			}
+		})
+	}
+
+	accepted := []string{
+		// DSQL takes this one as far as complaining about the index, which the
+		// alter_unique_using_index probe records, so it must reach the backend.
+		"ALTER TABLE t ADD CONSTRAINT uq_t UNIQUE USING INDEX uq_idx",
+		"ALTER TABLE t ADD CONSTRAINT pk_t PRIMARY KEY USING INDEX pk_idx",
+		// A key declared with the table is how DSQL expects one.
+		"CREATE TABLE t (id int PRIMARY KEY, a text UNIQUE)",
+		// The constraint kinds the dialect does allow through ALTER TABLE.
+		"ALTER TABLE t ADD CONSTRAINT ck_t CHECK (a > 0) NOT VALID",
+		"ALTER TABLE t ADD CONSTRAINT fk_t FOREIGN KEY (p) REFERENCES p (id) NOT VALID",
+	}
+	for _, sql := range accepted {
+		t.Run(sql, func(t *testing.T) {
+			result, err := c.Classify(sql)
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if result.Verdict.Rejected() {
+				t.Fatalf("%q was refused: %s %s", sql, result.Verdict.Code, result.Verdict.Message)
+			}
+		})
+	}
+}

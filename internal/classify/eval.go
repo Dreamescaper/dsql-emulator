@@ -47,6 +47,9 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if r.AddConstraintMissingNotValid && !addsConstraintWithoutValidation(node) {
 		return false
 	}
+	if len(r.AddConstraintType) > 0 && !addsConstraintOfType(node, r.AddConstraintType) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -188,6 +191,34 @@ func alterActions(node *pg_query.Node) []string {
 // addsConstraintWithoutValidation reports whether a statement adds a CHECK or
 // FOREIGN KEY constraint without NOT VALID, which the dialect requires for a
 // constraint added by ALTER TABLE.
+// addsConstraintOfType reports whether an ALTER TABLE adds a constraint of one
+// of the given kinds.
+//
+// A constraint that adopts an index already built -- ADD CONSTRAINT ... UNIQUE
+// USING INDEX -- is never matched. Aurora DSQL accepts that form: the recorded
+// alter_unique_using_index probe gets as far as `55000 index is not valid`,
+// which is a complaint about the index rather than about the statement.
+func addsConstraintOfType(node *pg_query.Node, kinds []string) bool {
+	stmt := node.GetAlterTableStmt()
+	if stmt == nil {
+		return false
+	}
+	for _, node := range stmt.GetCmds() {
+		cmd := node.GetAlterTableCmd()
+		if cmd == nil || cmd.GetSubtype() != pg_query.AlterTableType_AT_AddConstraint {
+			continue
+		}
+		constraint := cmd.GetDef().GetConstraint()
+		if constraint == nil || constraint.GetIndexname() != "" {
+			continue
+		}
+		if contains(kinds, constraint.GetContype().String()) {
+			return true
+		}
+	}
+	return false
+}
+
 func addsConstraintWithoutValidation(node *pg_query.Node) bool {
 	stmt := node.GetAlterTableStmt()
 	if stmt == nil {
