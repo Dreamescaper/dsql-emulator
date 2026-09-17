@@ -67,6 +67,11 @@ func setupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_bulk",
 		"DROP TABLE IF EXISTS baseline_drop_me",
 		"DROP TABLE IF EXISTS baseline_implicit_bulk",
+		"DROP TABLE IF EXISTS baseline_fk_cascade",
+		"DROP TABLE IF EXISTS baseline_fk_setnull",
+		"DROP TABLE IF EXISTS baseline_fk_setdefault",
+		"DROP TABLE IF EXISTS baseline_fk_action",
+		"DROP TABLE IF EXISTS baseline_span",
 		"DROP TABLE IF EXISTS baseline_multi",
 		"DROP TABLE IF EXISTS baseline_multi_a",
 		"DROP TABLE IF EXISTS baseline_multi_b",
@@ -83,6 +88,23 @@ func setupStatements() []string {
 		"CREATE TABLE baseline_alter_fk (id int PRIMARY KEY, parent_id uuid)",
 		"CREATE TABLE baseline_implicit_bulk (id int)",
 		"CREATE TABLE baseline_multi (id int PRIMARY KEY, a int)",
+		// A referential action conflicts through the child row it rewrites, so
+		// each action gets its own parent row and its own child table.
+		"CREATE TABLE baseline_fk_action (id uuid PRIMARY KEY, name text NOT NULL)",
+		"INSERT INTO baseline_fk_action (id, name) VALUES ('00000000-0000-0000-0000-0000000000c1', 'cascade')",
+		"INSERT INTO baseline_fk_action (id, name) VALUES ('00000000-0000-0000-0000-0000000000c2', 'set-null')",
+		"INSERT INTO baseline_fk_action (id, name) VALUES ('00000000-0000-0000-0000-0000000000c3', 'set-default')",
+		"INSERT INTO baseline_fk_action (id, name) VALUES ('00000000-0000-0000-0000-0000000000c4', 'default-target')",
+		"CREATE TABLE baseline_fk_cascade (id uuid PRIMARY KEY, parent_id uuid REFERENCES baseline_fk_action(id) ON DELETE CASCADE, note text)",
+		"CREATE TABLE baseline_fk_setnull (id uuid PRIMARY KEY, parent_id uuid REFERENCES baseline_fk_action(id) ON DELETE SET NULL, note text)",
+		"CREATE TABLE baseline_fk_setdefault (id uuid PRIMARY KEY, parent_id uuid DEFAULT '00000000-0000-0000-0000-0000000000c4' REFERENCES baseline_fk_action(id) ON DELETE SET DEFAULT, note text)",
+		"INSERT INTO baseline_fk_cascade (id, parent_id, note) VALUES ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c1', 'child')",
+		"INSERT INTO baseline_fk_setnull (id, parent_id, note) VALUES ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000c2', 'child')",
+		"INSERT INTO baseline_fk_setdefault (id, parent_id, note) VALUES ('00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-0000000000c3', 'child')",
+		// Several rows behind one non-key predicate, for the row count a losing
+		// statement reports.
+		"CREATE TABLE baseline_span (id int PRIMARY KEY, k int NOT NULL, v text)",
+		"INSERT INTO baseline_span (id, k, v) VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 1, 'c'), (4, 2, 'other')",
 		"INSERT INTO baseline_parent (id, name) VALUES ('00000000-0000-0000-0000-0000000000aa', 'seed')",
 		"CREATE TABLE baseline_conflict (id uuid PRIMARY KEY, name text NOT NULL)",
 		"CREATE TABLE baseline_conflict_child (id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES baseline_conflict(id))",
@@ -103,7 +125,12 @@ func cleanupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_multi_b",
 		"DROP TABLE IF EXISTS baseline_multi_c",
 		"DROP TABLE IF EXISTS baseline_multi_d",
+		"DROP TABLE IF EXISTS baseline_span",
 		// Tables that reference another table must go first.
+		"DROP TABLE IF EXISTS baseline_fk_cascade",
+		"DROP TABLE IF EXISTS baseline_fk_setnull",
+		"DROP TABLE IF EXISTS baseline_fk_setdefault",
+		"DROP TABLE IF EXISTS baseline_fk_action",
 		"DROP TABLE IF EXISTS baseline_alter_fk",
 		"DROP TABLE IF EXISTS baseline_alter_pk",
 		"DROP TABLE IF EXISTS baseline_alter_big",
@@ -534,6 +561,37 @@ func occConflictCases() []Case {
 			Sessions: [][]string{
 				{"BEGIN", "UPDATE baseline_conflict SET name = 'nk' WHERE id = '00000000-0000-0000-0000-0000000000af'", "COMMIT"},
 				{"BEGIN", "INSERT INTO baseline_conflict_child (id, parent_id) VALUES ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000af')", "COMMIT"},
+			}},
+		// The delete/insert pair is probed against a plain foreign key; these
+		// ask whether a referential action conflicts through the child row it
+		// rewrites. Each deletes a parent while another session writes the
+		// child that the action would touch.
+		{Name: "occ_fk_cascade_vs_child_write", Group: "occ_conflict", ConflictRace: true,
+			Note: "ON DELETE CASCADE deletes the child; does that conflict with a write to it?",
+			Sessions: [][]string{
+				{"BEGIN", "DELETE FROM baseline_fk_action WHERE id = '00000000-0000-0000-0000-0000000000c1'", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_fk_cascade SET note = 'touched' WHERE id = '00000000-0000-0000-0000-0000000000d1'", "COMMIT"},
+			}},
+		{Name: "occ_fk_set_null_vs_child_write", Group: "occ_conflict", ConflictRace: true,
+			Note: "ON DELETE SET NULL rewrites the child's key column",
+			Sessions: [][]string{
+				{"BEGIN", "DELETE FROM baseline_fk_action WHERE id = '00000000-0000-0000-0000-0000000000c2'", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_fk_setnull SET note = 'touched' WHERE id = '00000000-0000-0000-0000-0000000000d2'", "COMMIT"},
+			}},
+		{Name: "occ_fk_set_default_vs_child_write", Group: "occ_conflict", ConflictRace: true,
+			Note: "ON DELETE SET DEFAULT rewrites the child's key column to another parent",
+			Sessions: [][]string{
+				{"BEGIN", "DELETE FROM baseline_fk_action WHERE id = '00000000-0000-0000-0000-0000000000c3'", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_fk_setdefault SET note = 'touched' WHERE id = '00000000-0000-0000-0000-0000000000d3'", "COMMIT"},
+			}},
+		// Every other conflict probe matches one row by primary key, so the row
+		// count a losing statement reports has never been tested against more
+		// than one. Both sessions match the same three rows by a non-key column.
+		{Name: "occ_multirow_predicate", Group: "occ_conflict", ConflictRace: true,
+			Note: "what row count does the loser report when its predicate spans several rows?",
+			Sessions: [][]string{
+				{"BEGIN", "UPDATE baseline_span SET v = 'a-side' WHERE k = 1", "COMMIT"},
+				{"BEGIN", "UPDATE baseline_span SET v = 'b-side' WHERE k = 1", "COMMIT"},
 			}},
 		{Name: "occ_disjoint_writes", Group: "occ_conflict",
 			Note: "writes to different rows do not conflict",

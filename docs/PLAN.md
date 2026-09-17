@@ -589,13 +589,18 @@ Answered by the multi-statement probes (recorded 2026-09-17):
 | `BEGIN; CREATE INDEX ASYNC ...; COMMIT` in one query? | Accepted, and the `job_id` comes back on the index build's own result, not on the `BEGIN`. |
 | `BEGIN; INSERT ...; COMMIT` in one query? | Accepted, three results. |
 
-Still open:
+Still open, with probes written and waiting on a run:
 
-- Whether `SET DEFAULT` and `CASCADE` conflict like `SET NULL`; only the
-  delete/insert and non-key-update pairs are probed.
-- Whether a losing statement's row count still matches when its predicate spans
-  rows the transaction's own snapshot no longer agrees on; every probe matches a
-  single row by primary key.
+- Whether a referential action conflicts through the child row it rewrites.
+  `occ_fk_cascade_vs_child_write`, `occ_fk_set_null_vs_child_write` and
+  `occ_fk_set_default_vs_child_write` each delete a parent while another session
+  writes the child the action would touch. The emulator conflicts in all three,
+  failing the parent delete; whether DSQL does is unrecorded.
+- What row count a losing statement reports when its predicate spans more than
+  one row. Every other conflict probe matches a single row by primary key.
+  `occ_multirow_predicate` has both sessions match the same three rows by a
+  non-key column; the emulator reports `UPDATE 3` for the loser, which is what
+  its shadow counted under the transaction's own snapshot.
 
 ## Prior art
 

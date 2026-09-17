@@ -50,6 +50,61 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Probes for the two open backlog questions (2026-09-17)
+
+Both questions PLAN.md carried were unanswerable because nothing probed them.
+Four probes and their fixtures close that, and run against the emulator; the
+answers need a metered run.
+
+**Do referential actions conflict?** The FK conflict probe deletes a referenced
+row against a referencing insert, on a plain foreign key. These ask the other
+half: a referential action rewrites the *child* row, so does that conflict with
+a concurrent write to it? `baseline_fk_action` gets a parent row per action and
+a child table per action -- `ON DELETE CASCADE`, `SET NULL`, and `SET DEFAULT`,
+the last defaulting to a parent row nothing deletes, so the action has somewhere
+to point. Each probe deletes the parent in one session and updates the child in
+the other.
+
+The emulator conflicts in all three, failing the parent delete, which is what
+PostgreSQL's locking gives: the action takes the child's row lock. Whether DSQL
+agrees is the question.
+
+**What row count does a loser report?** Every other conflict probe matches one
+row by primary key, so the shadow that counts a refused statement's rows has
+never been tested against more than one. `baseline_span` holds three rows behind
+`k = 1`, and `occ_multirow_predicate` has both sessions update all three. The
+emulator reports `UPDATE 3` for the loser.
+
+All four are marked `ConflictRace`, which is safe whichever way the answer goes:
+it asserts how many transactions lost, so a pair that turns out not to conflict
+compares zero against zero.
+
+Files: `internal/conformance/suite.go`, `docs/PLAN.md`.
+
+**Verification.** The probes run against the emulator, the setup applies with no
+failures and no cleanup skips, and the recorded 218 still match:
+
+```
+recorded occ_fk_cascade_vs_child_write     session 0: BEGIN | DELETE 1 | error 40001 || session 1: BEGIN | UPDATE 1 | COMMIT
+recorded occ_fk_set_null_vs_child_write    session 0: BEGIN | DELETE 1 | error 40001 || session 1: BEGIN | UPDATE 1 | COMMIT
+recorded occ_fk_set_default_vs_child_write session 0: BEGIN | DELETE 1 | error 40001 || session 1: BEGIN | UPDATE 1 | COMMIT
+recorded occ_multirow_predicate            session 0: BEGIN | UPDATE 3 | error 40001 || session 1: BEGIN | UPDATE 3 | COMMIT
+    conformance_test.go:114: 218 cases match the golden record
+```
+
+`make build`, `make vet`, `make test`, `make test-integration` and `-race` all
+pass. The golden record is untouched.
+
+**Not done: the probes are unrecorded**, so both questions are still open. The
+answers above are the emulator's, not a cluster's.
+
+**One risk in the next run.** The new fixtures put `ON DELETE CASCADE`,
+`SET NULL` and `SET DEFAULT` in `Suite.Setup`, and a setup statement that fails
+aborts the whole run before any probe executes. The documentation lists all
+three as supported and the emulator accepts them, so this is unlikely; if it
+happens the run writes nothing and the record is left as it was, costing a token
+and reporting which statement failed.
+
 ### Refusal messages mirror Aurora DSQL's wording (2026-09-17)
 
 Messages were advisory in the comparison and had been left to drift, on the
@@ -1862,6 +1917,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-17 | A parent row and a child table per referential action | The actions differ in what they write to the child, so sharing a parent would have let one probe's delete disturb another's. |
+| 2026-09-17 | Marked the new pairs `ConflictRace` before knowing whether they conflict | It asserts how many transactions lost rather than which, so it is correct whichever way the recording goes, and wrong only if the count itself differs -- which is the thing worth catching. |
 | 2026-09-17 | Fill `{type}` and `{language}` from the refused statement | DSQL names what it refused, and a fixed sentence per rule cannot. The alternative was a rule per type, which would have meant twenty-odd near-identical rules and no way to name an array's element type at all. |
 | 2026-09-17 | Render types as PostgreSQL displays them, not as written | The record shows `varbit(8)` refused as `bit varying` and `int[]` as `integer[]`, so DSQL reports the displayed name. Only the parser's internal aliases are mapped; anything else passes through, so a type this has no evidence for is reported as the user wrote it rather than guessed at. |
 | 2026-09-17 | Messages stay advisory in the comparison | Matching today does not make wording a contract. Keeping them advisory means a future drift is reported rather than failing a run, which is the same bargain as before -- only now the baseline is zero notes. |
@@ -1933,13 +1990,11 @@ with zero protocol assumptions.
 
 Every milestone is done, the adjudicator included. What remains:
 
-### 1. The two open backlog questions
+### 1. Record the four new conflict probes
 
-PLAN.md still lists two unanswered questions, and neither has a probe: whether
-`SET DEFAULT` and `CASCADE` conflict the way `SET NULL` does, and whether a
-losing statement's row count holds when its predicate spans rows the
-transaction's own snapshot no longer agrees on. Both need probes written first,
-then a metered run.
+The probes for PLAN.md's two open questions are written and run against the
+emulator, but no cluster has answered them, so `make conformance` reports four
+cases as not covered. One metered run settles both questions.
 
 ### 2. Smaller items
 
