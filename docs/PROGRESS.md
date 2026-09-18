@@ -6,8 +6,8 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, the record holds 226 probes recorded on 2026-09-18,
-and the verification backlog is empty.** A pipelining client such as Npgsql is adjudicated like any other, from
+**Every milestone is done, and the record holds 232 probes recorded on
+2026-09-18.** A pipelining client such as Npgsql is adjudicated like any other, from
 the first statement of a transaction onwards. Every refusal the record
 holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
 handles parameterised statements, which is the shape application code writes. A multi-statement simple
@@ -51,6 +51,70 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Track issue #4's lateral-join defect instead of emulating it (2026-09-18)
+
+The reduced repro on issue #4 changes what the report is about. It is not
+composite row values — the record already shows DSQL accepting those in every
+shape probed. It is specifically a `LEFT JOIN LATERAL` whose target list *and*
+`WHERE` both reference the outer relation:
+
+```sql
+SELECT p.id, x.pid
+FROM baseline_lat_parent AS p
+LEFT JOIN LATERAL (
+    SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id
+) AS x ON TRUE;
+```
+
+Aurora DSQL answers `42804 attribute 1 of type baseline_lat_child has wrong
+type`, saying the table has `bigint` where the query expects `text`.
+
+**No rule was written, and none should be.** Three things say this is a defect
+rather than a restriction: `CROSS JOIN LATERAL` and `INNER JOIN LATERAL` take
+the identical subquery; the type the error expects tracks the *outer* column
+even when the projection is cast away from it; and the attribute it names is the
+*inner* relation's first. That reads as the planner binding an outer-referencing
+target to the inner rowtype. Emulating it would mean teaching the emulator a bug
+and unteaching it when the service is fixed, and a rule broad enough to catch it
+would refuse lateral joins that work.
+
+So five probes track it. `q_lateral_left_outer_ref` and
+`q_lateral_left_outer_ref_cast` carry a `KnownGap`, which records and replays a
+case without enforcing it. Three controls sit beside them —
+`q_lateral_left_no_outer_where`, `q_lateral_cross_outer_ref` and
+`q_lateral_inner_outer_ref` — so a fix on the cluster shows up as the failing
+case starting to pass, rather than as an unexplained change in a fixture.
+
+`KnownGap` has until now meant "the emulator has not closed this yet". It now
+also covers "the emulator should not close this", which is a different thing and
+is written down in PLAN.md so the next reader does not mistake one for the
+other.
+
+Files: `internal/conformance/suite.go`, `docs/PLAN.md`, `README.md`.
+
+**Verification.**
+
+```
+recorded q_lateral_left_outer_ref     SELECT 1
+recorded q_lateral_left_no_outer_where SELECT 1
+recorded q_lateral_cross_outer_ref    SELECT 1
+recorded q_lateral_inner_outer_ref    SELECT 1
+recorded q_lateral_left_outer_ref_cast SELECT 1
+
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.454s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.651s
+```
+
+All five pass on the emulator, which is the divergence for two of them and the
+expected answer for the three controls.
+
+**Still open.** The five probes are unrecorded, so the `KnownGap` on the two
+failing ones does nothing until a run puts DSQL's `42804` in the record. Ten
+cases are now waiting on a baseline: these five and the five `ADD COLUMN`
+constraint ones.
 
 ### The backlog group holds open questions again (2026-09-18)
 
@@ -2595,6 +2659,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | Track issue #4's lateral defect, do not emulate it | `CROSS` and `INNER LATERAL` take the same subquery, the expected type follows the outer column through a cast, and the named attribute is the inner relation's -- a planner defect, reported. Emulating it would mean unteaching it when the service is fixed. |
+| 2026-09-18 | Controls recorded beside the failing probes | A fix on the cluster should read as the failing case passing, not as a fixture changing for no stated reason. |
 | 2026-09-18 | Answered probes move out of `backlog` into their subject group | The group is named for open questions and had accumulated settled ones, so the fixture read as a list of unsupported features. Moving them costs nothing -- the comparison is by name -- and leaves the topical files complete. |
 | 2026-09-18 | A test enforces it rather than a convention | The pile built up because nothing stopped it. A convention would rebuild it. |
 | 2026-09-18 | The `ADD COLUMN` rule matches an identity constraint whatever the type | The recorded refusal is about the constraint and never mentions the type, so refusing only a non-bigint one would let through the case DSQL also rejects -- the direction that lets a suite pass and a deployment fail. |
@@ -2685,15 +2751,15 @@ with zero protocol assumptions.
 
 ## Next up
 
-Every milestone is done, the adjudicator included, and PLAN.md's verification
-backlog is empty. What remains:
+Every milestone is done, the adjudicator included. PLAN.md's verification
+backlog has two open questions, both with probes written. What remains:
 
-### 1. Record the ADD COLUMN constraint probes
+### 1. Record the ten waiting probes
 
-`alter_add_identity_bigint`, `alter_add_column_not_null`, `..._default`,
-`..._check` and `..._unique` settle how wide DSQL's
-"ALTER TABLE ADD COLUMN with constraint not supported" is. Only the identity
-form is a rule until they are answered.
+Five settle how wide DSQL's `ALTER TABLE ADD COLUMN with constraint not
+supported` is, and five put issue #4's `42804` and its three controls in the
+record, which is what makes the `KnownGap` on it mean anything. One run does
+both.
 
 ### 2. The intermittent conformance failure
 

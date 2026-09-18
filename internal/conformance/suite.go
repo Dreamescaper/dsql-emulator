@@ -96,6 +96,13 @@ func setupStatements() []string {
 		// A table with no key of its own, for the ALTER TABLE forms that would
 		// give it one.
 		"CREATE TABLE baseline_alter_pkadd (id int, v text)",
+		// For the LEFT JOIN LATERAL defect: the outer key is text and the
+		// inner relation's first attribute is bigint, which is the mismatch
+		// the error reports.
+		"CREATE TABLE baseline_lat_parent (id text NOT NULL PRIMARY KEY)",
+		"CREATE TABLE baseline_lat_child (id bigint NOT NULL PRIMARY KEY, parent_id text)",
+		"INSERT INTO baseline_lat_parent (id) VALUES ('a')",
+		"INSERT INTO baseline_lat_child (id, parent_id) VALUES (1, 'a')",
 		"CREATE TABLE baseline_implicit_bulk (id int)",
 		"CREATE TABLE baseline_multi (id int PRIMARY KEY, a int)",
 		// A referential action conflicts through the child row it rewrites, so
@@ -140,7 +147,7 @@ func verifyStatements() []string {
 		"baseline_alter_big", "baseline_alter_fk", "baseline_implicit_bulk",
 		"baseline_multi", "baseline_fk_action", "baseline_fk_cascade",
 		"baseline_fk_setnull", "baseline_fk_setdefault", "baseline_span",
-		"baseline_alter_pkadd",
+		"baseline_alter_pkadd", "baseline_lat_parent", "baseline_lat_child",
 		"baseline_conflict", "baseline_conflict_child",
 	} {
 		out = append(out, "SELECT 1 FROM "+table+" LIMIT 0")
@@ -159,6 +166,8 @@ func cleanupStatements() []string {
 		"DROP TABLE IF EXISTS baseline_multi_d",
 		"DROP TABLE IF EXISTS baseline_span",
 		"DROP TABLE IF EXISTS baseline_alter_pkadd",
+		"DROP TABLE IF EXISTS baseline_lat_child",
+		"DROP TABLE IF EXISTS baseline_lat_parent",
 		"DROP TABLE IF EXISTS baseline_identity_int",
 		"DROP TABLE IF EXISTS baseline_identity_small",
 		"DROP TABLE IF EXISTS baseline_identity_big",
@@ -581,6 +590,38 @@ func queryCases() []Case {
 		{Name: "q_window_lag", Group: "queries", Steps: one("SELECT LAG(name) OVER (ORDER BY name) FROM baseline_parent ORDER BY 1")},
 		{Name: "q_with_recursive", Group: "queries", Steps: one("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n FROM t ORDER BY 1")},
 		{Name: "q_aggregate_filter", Group: "queries", Steps: one("SELECT count(*) FILTER (WHERE name = 'seed') FROM baseline_parent")},
+		// Issue #4, reduced: a LEFT JOIN LATERAL whose target list and WHERE
+		// both reference the outer relation is refused by Aurora DSQL with
+		// `42804 attribute 1 of type baseline_lat_child has wrong type`, saying
+		// the table has bigint where the query expects text. The type it
+		// expects tracks the outer column and the attribute it names is the
+		// inner relation's first, so the planner appears to bind an
+		// outer-referencing target to the inner rowtype.
+		//
+		// This is tracked, not emulated. CROSS and INNER LATERAL take the same
+		// subquery, so it is not a restriction on lateral joins, on outer
+		// references, or on row values -- it reads as a defect, and it has been
+		// reported. Reproducing it would mean teaching the emulator a bug and
+		// then unteaching it. The three controls sit alongside so that a fix on
+		// the cluster shows up as the failing case passing rather than as an
+		// unexplained change.
+		{Name: "q_lateral_left_outer_ref", Group: "queries",
+			KnownGap: "DSQL refuses this with 42804; a suspected planner defect, reported and tracked rather than emulated",
+			Note:     "LEFT JOIN LATERAL whose target list and WHERE both reference the outer relation",
+			Steps:    one(`SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE`)},
+		{Name: "q_lateral_left_no_outer_where", Group: "queries",
+			Note:  "control: the same, with no outer reference in the WHERE",
+			Steps: one(`SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c) AS x ON TRUE`)},
+		{Name: "q_lateral_cross_outer_ref", Group: "queries",
+			Note:  "control: CROSS JOIN LATERAL takes the identical subquery",
+			Steps: one(`SELECT p.id, x.pid FROM baseline_lat_parent AS p CROSS JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x`)},
+		{Name: "q_lateral_inner_outer_ref", Group: "queries",
+			Note:  "control: INNER JOIN LATERAL takes the identical subquery",
+			Steps: one(`SELECT p.id, x.pid FROM baseline_lat_parent AS p INNER JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE`)},
+		{Name: "q_lateral_left_outer_ref_cast", Group: "queries",
+			KnownGap: "DSQL refuses this with 42804; a suspected planner defect, reported and tracked rather than emulated",
+			Note:     "the expected type tracks the outer column even when the projection is cast away from it",
+			Steps:    one(`SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT length(p.id)::bigint AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE`)},
 		{Name: "q_merge", Group: "queries", Steps: one("MERGE INTO baseline_idx t USING baseline_parent s ON t.id = '00000000-0000-0000-0000-0000000000a1' WHEN MATCHED THEN UPDATE SET value = 'x'")},
 	}
 }

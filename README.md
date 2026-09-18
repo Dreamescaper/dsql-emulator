@@ -101,6 +101,12 @@ conn, err := pgx.Connect(ctx, dsn)
   does not read its own writes. A conflict on a `RETURNING`, an
   `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is reported
   at the statement rather than at `COMMIT`.
+- **A `LEFT JOIN LATERAL` that Aurora DSQL refuses runs here.** A lateral whose
+  target list and `WHERE` both reference the outer relation is answered on a
+  cluster with `42804 attribute 1 of type <inner> has wrong type`, where this
+  runs it. `CROSS` and `INNER JOIN LATERAL` take the identical subquery on both,
+  which is why it is tracked as a service defect rather than emulated; see
+  [issue #4](https://github.com/Dreamescaper/dsql-emulator/issues/4).
 - **IAM tokens are accepted, not validated.** The backing database is
   trust-configured, so any password connects. Nothing checks the token.
 - **`sys.jobs` records index builds and constraint validation only.** `CREATE INDEX ASYNC` builds the

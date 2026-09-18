@@ -486,6 +486,14 @@ Moving a case between groups needs no re-recording: the comparison matches cases
 by name and `LoadDir` merges every fixture into one record, so a group only
 decides which file a case is written to on the next run.
 
+A `KnownGap` also covers a divergence the emulator should *not* close. Where
+Aurora DSQL looks to be defective rather than restrictive, reproducing it would
+mean teaching the emulator a bug and unteaching it when the service is fixed, so
+the case is recorded, replayed and reported without being enforced, with
+controls beside it so a fix on the cluster shows up as the failing case passing
+rather than as an unexplained change. `q_lateral_left_outer_ref` is the standing
+example; see issue #4.
+
 A case may set `SimpleProtocol`, which sends each step as a simple query rather
 than through the extended protocol. That is the only way a step can hold more
 than one statement — what `psql -c 'a; b'` sends — and the extended protocol
@@ -700,6 +708,17 @@ projection over two tables, which none of these four shapes reaches.
 
 Open, with probes written and waiting on a run:
 
+- What Aurora DSQL does with a `LEFT JOIN LATERAL` whose target list and `WHERE`
+  both reference the outer relation. Reported in issue #4 as
+  `42804 attribute 1 of type <inner> has wrong type`, saying the table has
+  `bigint` where the query expects `text`. The type it expects tracks the outer
+  column and the attribute it names is the inner relation's first, and `CROSS`
+  and `INNER LATERAL` take the identical subquery, so this reads as the planner
+  binding an outer-referencing target to the inner rowtype rather than as any
+  restriction on lateral joins, outer references or row values. Reported to AWS
+  and **not emulated**: `q_lateral_left_outer_ref` and
+  `q_lateral_left_outer_ref_cast` carry a `KnownGap`, and three controls pin
+  that it is specific to `LEFT JOIN LATERAL`.
 - How wide DSQL's `ALTER TABLE ADD COLUMN with constraint not supported` is. The
   recorded `alter_add_identity_integer` refusal names the constraint rather than
   the column's type, so the rule refuses an identity column of any type there,
