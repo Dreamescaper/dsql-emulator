@@ -252,7 +252,18 @@ func RunSuite(ctx context.Context, connect Connector, suite Suite, opts Options)
 				observe = ObserveSimple
 			}
 			for _, sql := range c.Steps {
-				recorded.Observations = append(recorded.Observations, observe(ctx, conn, sql))
+				obs := observe(ctx, conn, sql)
+				recorded.Observations = append(recorded.Observations, obs)
+				// A step the target did not answer, on a connection that is
+				// then gone, means the run lost its target. Carrying on would
+				// record a run of transport errors as though they were the
+				// target's behavior, and bury the one error that says what
+				// happened under every probe that followed it. A step that
+				// merely failed to decode leaves the connection usable and is
+				// recorded like any other answer.
+				if !Answered(obs) && conn.IsClosed() {
+					return golden, fmt.Errorf("case %s lost the connection on %q: %s", c.Name, sql, obs.Message)
+				}
 			}
 			// Any case can leave a transaction open, or aborted. Reset so the
 			// next case starts clean; a ROLLBACK with nothing to undo is
@@ -340,6 +351,14 @@ func failedObservation(err error) Observation {
 		obs.Message = pgErr.Message
 	}
 	return obs
+}
+
+// Answered reports whether the target answered a step at all. A *pgconn.PgError
+// is an answer even when it is a refusal; anything else -- a closed connection,
+// a timeout, a protocol violation the driver gave up on -- means the run lost
+// the target, and what follows is not evidence about the target's behavior.
+func Answered(obs Observation) bool {
+	return obs.Outcome != "error" || obs.SQLState != ""
 }
 
 func formatValues(values []any) []string {

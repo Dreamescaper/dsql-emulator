@@ -52,6 +52,48 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### Make the conformance run name a lost connection (2026-09-18)
+
+The intermittent CI failure happened a second time, at exactly the same point:
+right after `two_ddl_one_txn`, a refusal inside a transaction. Twice in the same
+place is not noise, but it has still not reproduced locally — eight plain runs,
+four under `-race`, four with `GOMAXPROCS=1`, all green.
+
+So the harness now says what happened instead of burying it. A step that the
+target did not answer, on a connection that is then closed, ends the run with
+that error named. Before this, the connection died at case 30 and the remaining
+~200 probes each recorded a transport error as though it were the target's
+behaviour; the one error that explained it was somewhere in the middle, and the
+run failed at the end with "the schema did not survive the run", which is the
+wrong diagnosis for a dead connection.
+
+A refusal is an answer and a lost connection is not, which is the distinction
+`Answered` draws: a `*pgconn.PgError` means the target replied, even to say no.
+The check also requires `conn.IsClosed()`, so a step that merely failed to decode
+leaves the connection usable and is recorded like any other answer rather than
+throwing away a metered run.
+
+This does not fix the underlying fault. It makes the next occurrence report
+which case and which statement lost the connection, on the first line rather
+than the two-hundredth, which is what the last two occurrences cost to work out
+by hand.
+
+Files: `internal/conformance/record.go`,
+`internal/conformance/conformance_test.go`.
+
+**Verification.**
+
+```
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.391s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.826s
+```
+
+**Still open.** The fault itself. Both occurrences are in CI, both right after a
+refusal inside a transaction, and the newest machinery on that path is the
+exchange accounting and the savepoint injection.
+
 ### Recorded the ten waiting probes; one control was not one (2026-09-18)
 
 242 cases recorded, schema verified before and after, and the emulator matches
@@ -2826,11 +2868,12 @@ leaves both through until they are answered.
 
 ### 2. The intermittent conformance failure
 
-CI lost the client connection partway through one run and passed on a re-run;
-it has not reproduced in twelve local runs. The exchange accounting and the
-savepoint injection are the newest session machinery and the first place to
-look. The post-run schema check also misreports a dead connection as a missing
-relation, which is worth separating first so the next occurrence names itself.
+CI has lost the client connection twice, both times immediately after
+`two_ddl_one_txn` — a refusal inside a transaction — and it has not reproduced
+locally in sixteen runs across `-race` and `GOMAXPROCS=1`. The run now names the
+case and statement that lost the connection, so the next occurrence should say
+more than the last two did. The exchange accounting and the savepoint injection
+are the newest machinery on that path.
 
 ### 3. Reproduce issue #4's shape
 

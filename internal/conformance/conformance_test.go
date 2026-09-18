@@ -809,3 +809,29 @@ func TestSetupRelationsAreVerified(t *testing.T) {
 		t.Error("the suite verifies nothing after setup")
 	}
 }
+
+// A refusal is an answer; a lost connection is not. Recording the second as
+// though it were the target's behaviour is how one dead connection became two
+// hundred meaningless observations and buried the error that explained it.
+func TestAnsweredDistinguishesARefusalFromALostConnection(t *testing.T) {
+	answers := []conformance.Observation{
+		{Outcome: "ok", CommandTag: "SELECT 1"},
+		{Outcome: "error", SQLState: "0A000", Message: "unsupported statement"},
+		{Outcome: "error", SQLState: "42P01", Message: `relation "t" does not exist`},
+	}
+	for _, obs := range answers {
+		if !conformance.Answered(obs) {
+			t.Errorf("%+v is an answer from the target", obs)
+		}
+	}
+
+	lost := []conformance.Observation{
+		{Outcome: "error", Message: "conn closed"},
+		{Outcome: "error", Message: "context deadline exceeded"},
+	}
+	for _, obs := range lost {
+		if conformance.Answered(obs) {
+			t.Errorf("%+v is not an answer, it is a lost connection", obs)
+		}
+	}
+}
