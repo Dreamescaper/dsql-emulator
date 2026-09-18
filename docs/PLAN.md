@@ -470,6 +470,22 @@ rather than assumed.
 - `test/conformance` replays the same suite through the emulator and diffs it
   against that record. It needs Docker but never touches a cluster.
 
+Cases are grouped by subject, and each group is written to its own fixture. The
+groups are topical rather than by outcome: `alters` holds every `ALTER TABLE`
+probe whether the statement is accepted or refused, `types` every column type,
+and so on.
+
+`backlog` is the exception and means something narrower: a probe written to
+answer a question no recording has answered yet. Once a run answers one, the
+case moves to the group it belongs to by subject, so the group stays a list of
+what is unknown rather than a pile of everything ever asked — which is what it
+had become, and it reads from the outside as a list of what the emulator does
+not support. `TestBacklogHoldsOnlyOpenQuestions` enforces it.
+
+Moving a case between groups needs no re-recording: the comparison matches cases
+by name and `LoadDir` merges every fixture into one record, so a group only
+decides which file a case is written to on the next run.
+
 A case may set `SimpleProtocol`, which sends each step as a simple query rather
 than through the extended protocol. That is the only way a step can hold more
 than one statement — what `psql -c 'a; b'` sends — and the extended protocol

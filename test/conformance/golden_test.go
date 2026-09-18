@@ -157,3 +157,31 @@ func readFixtures(t *testing.T, dir string) map[string][]byte {
 	}
 	return contents
 }
+
+// TestBacklogHoldsOnlyOpenQuestions keeps the backlog group meaning what its
+// name says. A case goes there to ask a question no recording has answered, and
+// moves to the group it belongs to by subject once one has. Without this the
+// group silently becomes a pile of everything ever asked, and reads as a list of
+// what the emulator does not support -- which is not what it is.
+func TestBacklogHoldsOnlyOpenQuestions(t *testing.T) {
+	recorded, err := conformance.LoadDir(goldenDir)
+	if err != nil {
+		t.Fatalf("load the golden record: %v", err)
+	}
+	answered := make(map[string]bool, len(recorded.Cases))
+	for _, c := range recorded.Cases {
+		answered[c.Name] = true
+	}
+
+	open := 0
+	for _, c := range conformance.DefaultSuite().Cases {
+		if c.Group != "backlog" {
+			continue
+		}
+		open++
+		if answered[c.Name] {
+			t.Errorf("%s is in the backlog group but the record answers it; move it to the group it belongs to by subject", c.Name)
+		}
+	}
+	t.Logf("%d open question(s) in the backlog group", open)
+}

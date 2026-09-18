@@ -52,6 +52,50 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### The backlog group holds open questions again (2026-09-18)
+
+`backlog.json` had become a pile of everything ever asked. The group is named
+after this document's verification backlog and means "a probe written to answer
+a question no recording has answered", but nothing ever moved out of it: 21 of
+its 26 cases were settled, some of them months ago. From the outside the file
+reads as a list of what the emulator does not support, which is not what it is —
+`create_view` sat there because "do views work?" was once a question, and the
+answer turned out to be that DSQL allows them.
+
+The 21 answered cases moved to the group they belong to by subject: `savepoint`
+and `rollback_to_savepoint` to `transaction`, the two `SET` probes to
+`isolation`, `create_function_plpgsql` to `unsupported` alongside
+`create_function`, the sequence, schema, view and identity probes to `supported`
+alongside `identity_column`, the three `ALTER TABLE` ones to `alters`, and the
+four row-value ones to `queries`. What is left in `backlog` is the five
+`ADD COLUMN` constraint probes, which no run has answered.
+
+**Nothing had to be re-recorded.** The comparison matches cases by name and
+`LoadDir` merges every fixture into one record, so a group only decides which
+file a case is written to on the next run. `232 cases match` before and after,
+and the record is untouched; the fixtures reorganize the next time a baseline is
+taken.
+
+`TestBacklogHoldsOnlyOpenQuestions` now fails a case that is in the group and
+answered by the record, so the group cannot silently fill up again. That is the
+part worth keeping: the tidy-up is a one-off, the invariant is not.
+
+Files: `internal/conformance/suite.go`, `test/conformance/golden_test.go`,
+`docs/PLAN.md`.
+
+**Verification.**
+
+```
+$ go test ./test/conformance/ -run TestBacklogHoldsOnlyOpenQuestions -v
+    golden_test.go:186: 5 open question(s) in the backlog group
+--- PASS
+
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.645s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	10.285s
+```
+
 ### ALTER TABLE ADD COLUMN is refused for the constraint, not the type (2026-09-18)
 
 Reading `backlog.json` turned up a message the conformance run had been
@@ -2551,6 +2595,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | Answered probes move out of `backlog` into their subject group | The group is named for open questions and had accumulated settled ones, so the fixture read as a list of unsupported features. Moving them costs nothing -- the comparison is by name -- and leaves the topical files complete. |
+| 2026-09-18 | A test enforces it rather than a convention | The pile built up because nothing stopped it. A convention would rebuild it. |
 | 2026-09-18 | The `ADD COLUMN` rule matches an identity constraint whatever the type | The recorded refusal is about the constraint and never mentions the type, so refusing only a non-bigint one would let through the case DSQL also rejects -- the direction that lets a suite pass and a deployment fail. |
 | 2026-09-18 | Probes for the other constraint kinds rather than a wider rule | "With constraint" could mean `NOT NULL` and `DEFAULT` too, and refusing those without evidence would block DDL a cluster accepts. |
 | 2026-09-18 | No rule for composite row values, confirmed by recording | The probes show DSQL accepting every shape tried. A rule would have refused code that runs on a cluster, which is a worse failure than the gap it was meant to close. |
