@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-16T18:30:50.287896Z",
+  "recorded_at": "2026-09-18T09:04:23.176282Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -295,6 +295,21 @@
         {
           "outcome": "ok",
           "command_tag": "CREATE FUNCTION"
+        }
+      ]
+    },
+    {
+      "name": "create_function_plpgsql",
+      "group": "unsupported",
+      "note": "confirm non-sql function languages are refused",
+      "steps": [
+        "CREATE FUNCTION baseline_plpgsql() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "CREATE FUNCTION with language plpgsql not supported"
         }
       ]
     }

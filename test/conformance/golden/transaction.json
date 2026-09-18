@@ -1,9 +1,24 @@
 {
-  "recorded_at": "2026-09-16T18:30:50.287896Z",
+  "recorded_at": "2026-09-18T09:04:23.176282Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
   "cases": [
+    {
+      "name": "savepoint",
+      "group": "transaction",
+      "note": "confirm savepoints are refused",
+      "steps": [
+        "SAVEPOINT baseline_sp"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported transaction statement: SAVEPOINT"
+        }
+      ]
+    },
     {
       "name": "two_ddl_one_txn",
       "group": "transaction",
@@ -383,6 +398,20 @@
           "outcome": "error",
           "sqlstate": "54000",
           "message": "transaction row limit exceeded"
+        }
+      ]
+    },
+    {
+      "name": "rollback_to_savepoint",
+      "group": "transaction",
+      "steps": [
+        "ROLLBACK TO SAVEPOINT baseline_sp"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "unsupported transaction statement: ROLLBACK TO"
         }
       ]
     }

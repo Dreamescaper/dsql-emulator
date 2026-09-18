@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-16T18:30:50.287896Z",
+  "recorded_at": "2026-09-18T09:04:23.176282Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
@@ -60,6 +60,36 @@
         {
           "outcome": "ok",
           "command_tag": "COMMIT"
+        }
+      ]
+    },
+    {
+      "name": "set_transaction_repeatable_read",
+      "group": "isolation",
+      "note": "confirm SET TRANSACTION is refused even for the supported level",
+      "steps": [
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"TRANSACTION\" not supported"
+        }
+      ]
+    },
+    {
+      "name": "set_default_isolation",
+      "group": "isolation",
+      "note": "confirm SET default_transaction_isolation is refused",
+      "steps": [
+        "SET default_transaction_isolation = 'repeatable read'"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "0A000",
+          "message": "setting configuration parameter \"default_transaction_isolation\" not supported"
         }
       ]
     }

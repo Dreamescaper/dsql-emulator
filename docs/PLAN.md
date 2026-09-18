@@ -706,25 +706,30 @@ is narrower than "a query carries a row value", and pinning it needs a probe
 that reproduces it — the ORM-generated query it was seen with is a nested
 projection over two tables, which none of these four shapes reaches.
 
+Answered by the probes recorded on 2026-09-18:
+
+| Question | Answer |
+|----------|--------|
+| How wide is `ALTER TABLE ADD COLUMN with constraint not supported`? | Wide. `NOT NULL`, `DEFAULT`, `CHECK`, `UNIQUE` and `IDENTITY` are each refused, and a `bigint` identity column is refused as readily as an `integer` one, so the column's type really is beside the point. `COLLATE` and `STORAGE` carry no constraint and are accepted. |
+| What does DSQL do with a `LEFT JOIN LATERAL` that references the outer relation? | Refuses it with `42804 attribute 1 of type <inner> has wrong type`, saying the table has `bigint` where the query expects `text`. |
+
+The lateral answer came with a correction to the report. The outer reference in
+the `WHERE` is **not** required: the same statement with no `WHERE` at all is
+refused too, so an outer reference in the lateral's target list under a
+`LEFT JOIN` is enough on its own. `CROSS` and `INNER LATERAL` still take the
+identical subquery, and the type the error expects follows the outer column
+through a cast, so this reads as the planner binding an outer-referencing target
+to the inner rowtype rather than as a restriction on lateral joins, outer
+references or row values. Reported to AWS and **not emulated**: the three failing
+shapes carry a `KnownGap` and the two passing controls are recorded beside them.
+
 Open, with probes written and waiting on a run:
 
-- What Aurora DSQL does with a `LEFT JOIN LATERAL` whose target list and `WHERE`
-  both reference the outer relation. Reported in issue #4 as
-  `42804 attribute 1 of type <inner> has wrong type`, saying the table has
-  `bigint` where the query expects `text`. The type it expects tracks the outer
-  column and the attribute it names is the inner relation's first, and `CROSS`
-  and `INNER LATERAL` take the identical subquery, so this reads as the planner
-  binding an outer-referencing target to the inner rowtype rather than as any
-  restriction on lateral joins, outer references or row values. Reported to AWS
-  and **not emulated**: `q_lateral_left_outer_ref` and
-  `q_lateral_left_outer_ref_cast` carry a `KnownGap`, and three controls pin
-  that it is specific to `LEFT JOIN LATERAL`.
-- How wide DSQL's `ALTER TABLE ADD COLUMN with constraint not supported` is. The
-  recorded `alter_add_identity_integer` refusal names the constraint rather than
-  the column's type, so the rule refuses an identity column of any type there,
-  but whether `NOT NULL`, `DEFAULT`, `CHECK` or `UNIQUE` count is unrecorded.
-  `alter_add_identity_bigint` and the four `alter_add_column_*` probes answer it;
-  the emulator forwards all four today.
+- Whether an explicit `NULL` or a generated column counts as a constraint for
+  `ADD COLUMN`. The rule leaves both out: `NULL` states the default nullability
+  rather than restricting anything, and a generated column may be refused for
+  its own reasons. `alter_add_column_null` and `alter_add_column_generated`
+  answer it.
 
 ## Prior art
 

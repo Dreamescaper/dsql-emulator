@@ -1,9 +1,99 @@
 {
-  "recorded_at": "2026-09-16T18:30:50.287896Z",
+  "recorded_at": "2026-09-18T09:04:23.176282Z",
   "target": "aurora-dsql",
   "server_version": "PostgreSQL 16",
   "suite": "dsql-baseline",
   "cases": [
+    {
+      "name": "q_row_constructor",
+      "group": "queries",
+      "note": "a row value built in the projection",
+      "steps": [
+        "SELECT ROW(1, 'a')"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "row"
+          ],
+          "rows": [
+            [
+              "[1 a]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_row_comparison",
+      "group": "queries",
+      "note": "two row values compared",
+      "steps": [
+        "SELECT ROW(1, 'a') = ROW(1, 'a') AS same"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "same"
+          ],
+          "rows": [
+            [
+              "true"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_whole_row_reference",
+      "group": "queries",
+      "note": "a table referenced as a whole row, which is a composite of its rowtype",
+      "steps": [
+        "SELECT baseline_parent FROM baseline_parent LIMIT 1"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "baseline_parent"
+          ],
+          "rows": [
+            [
+              "(00000000-0000-0000-0000-0000000000aa,seed)"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_whole_row_in_subquery",
+      "group": "queries",
+      "note": "the shape an ORM generates for a nested projection",
+      "steps": [
+        "SELECT (SELECT p FROM baseline_parent p WHERE p.id = c.id) AS whole FROM baseline_parent c LIMIT 1"
+      ],
+      "ignore_rows": true,
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "whole"
+          ],
+          "rows": [
+            [
+              "(00000000-0000-0000-0000-0000000000aa,seed)"
+            ]
+          ]
+        }
+      ]
+    },
     {
       "name": "q_where",
       "group": "queries",
@@ -1298,6 +1388,101 @@
               "1"
             ]
           ]
+        }
+      ]
+    },
+    {
+      "name": "q_lateral_left_outer_ref",
+      "group": "queries",
+      "note": "LEFT JOIN LATERAL whose target list and WHERE both reference the outer relation",
+      "steps": [
+        "SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE"
+      ],
+      "known_gap": "DSQL refuses this with 42804; a suspected planner defect, reported and tracked rather than emulated",
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42804",
+          "message": "attribute 1 of type baseline_lat_child has wrong type"
+        }
+      ]
+    },
+    {
+      "name": "q_lateral_left_no_outer_where",
+      "group": "queries",
+      "note": "control: the same, with no outer reference in the WHERE",
+      "steps": [
+        "SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c) AS x ON TRUE"
+      ],
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42804",
+          "message": "attribute 1 of type baseline_lat_child has wrong type"
+        }
+      ]
+    },
+    {
+      "name": "q_lateral_cross_outer_ref",
+      "group": "queries",
+      "note": "control: CROSS JOIN LATERAL takes the identical subquery",
+      "steps": [
+        "SELECT p.id, x.pid FROM baseline_lat_parent AS p CROSS JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "id",
+            "pid"
+          ],
+          "rows": [
+            [
+              "a",
+              "a"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_lateral_inner_outer_ref",
+      "group": "queries",
+      "note": "control: INNER JOIN LATERAL takes the identical subquery",
+      "steps": [
+        "SELECT p.id, x.pid FROM baseline_lat_parent AS p INNER JOIN LATERAL (SELECT p.id AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE"
+      ],
+      "observations": [
+        {
+          "outcome": "ok",
+          "command_tag": "SELECT 1",
+          "columns": [
+            "id",
+            "pid"
+          ],
+          "rows": [
+            [
+              "a",
+              "a"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "q_lateral_left_outer_ref_cast",
+      "group": "queries",
+      "note": "the expected type tracks the outer column even when the projection is cast away from it",
+      "steps": [
+        "SELECT p.id, x.pid FROM baseline_lat_parent AS p LEFT JOIN LATERAL (SELECT length(p.id)::bigint AS pid FROM baseline_lat_child AS c WHERE p.id = c.parent_id) AS x ON TRUE"
+      ],
+      "known_gap": "DSQL refuses this with 42804; a suspected planner defect, reported and tracked rather than emulated",
+      "observations": [
+        {
+          "outcome": "error",
+          "sqlstate": "42804",
+          "message": "attribute 1 of type baseline_lat_child has wrong type"
         }
       ]
     },

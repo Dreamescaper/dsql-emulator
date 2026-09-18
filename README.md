@@ -19,10 +19,11 @@ reports conflicts the way DSQL reports them, so failures show up locally rather
 than in a deployment.
 
 The behavior is not guessed. `test/conformance/golden/` holds a record of what a
-real cluster answered for 226 probes, and the emulator is diffed against it. A
+real cluster answered for 242 probes, and the emulator is diffed against it. A
 probe added since the last recording is reported as unrecorded rather than
-silently passing. Every probe in the suite is currently recorded, and the
-emulator matches all of them but two accepted divergences.
+silently passing; two are waiting on the next run. The emulator matches every
+recorded probe but four accepted divergences, three of which are the one service
+defect below.
 
 ## Quick start
 
@@ -83,7 +84,7 @@ conn, err := pgx.Connect(ctx, dsn)
 | Transactions | One DDL per transaction, DDL and DML in separate transactions, a 3000-row cap, a 30-minute age limit, and the aborted-transaction state (`25P02`, then `ROLLBACK` on `COMMIT`) |
 | Types | The documented supported set including aliases, identity columns (which must be `bigint`) and sequences with the required `CACHE`, domains, enums refused the way DSQL refuses them. The list applies to a column added by `ALTER TABLE ADD COLUMN` as well as one a `CREATE TABLE` declares |
 | Indexes | `CREATE INDEX ASYNC` rewritten, answered with a `job_id`, and recorded in `sys.jobs`, in a single statement or in a multi-statement query such as `psql -c 'a; b'` sends; supports **partial indexes** (`WHERE`), expressions, `INCLUDE`, and `NULLS NOT DISTINCT`; synchronous `CREATE INDEX` and a schema-qualified index name are refused |
-| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. `ALTER COLUMN ... TYPE` is refused whatever the target type, and dropping a primary-key column is refused. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused. A `PRIMARY KEY` or `UNIQUE` constraint cannot be added to a table that exists, so a key has to be declared with the table; the `USING INDEX` form, which adopts an index already built, is forwarded |
+| `ALTER TABLE` | `DROP COLUMN`, `ADD COLUMN` with `STORAGE`, `SET STORAGE`, `ADD CONSTRAINT ... NOT VALID`, `RENAME`, and `SET SCHEMA`. `ALTER COLUMN ... TYPE` is refused whatever the target type, dropping a primary-key column is refused, and a column cannot be added with a constraint on it — `NOT NULL`, `DEFAULT`, `CHECK`, `UNIQUE` and identity are all refused, where `COLLATE` and `STORAGE` are not. A `CHECK` or `FOREIGN KEY` added by `ALTER TABLE` **must** use `NOT VALID` and is validated through `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, which returns a `job_id` recorded in `sys.jobs`; the synchronous form is refused. A `PRIMARY KEY` or `UNIQUE` constraint cannot be added to a table that exists, so a key has to be declared with the table; the `USING INDEX` form, which adopts an index already built, is forwarded |
 | OCC | Conflicts adjudicated at `COMMIT` without waiting for locks, reported as `40001 change conflicts with another transaction (OC000)`, across write-write, `FOR UPDATE`, `FOR KEY SHARE` and foreign-key overlap; plus deterministic injection of conflicts so retry loops can be tested |
 | Environment | Single `postgres` database, `UTC`, `admin` user, `sys.jobs` recording each index build |
 
@@ -102,9 +103,9 @@ conn, err := pgx.Connect(ctx, dsn)
   `INSERT ... SELECT`, an `ON CONFLICT` or a multi-statement query is reported
   at the statement rather than at `COMMIT`.
 - **A `LEFT JOIN LATERAL` that Aurora DSQL refuses runs here.** A lateral whose
-  target list and `WHERE` both reference the outer relation is answered on a
-  cluster with `42804 attribute 1 of type <inner> has wrong type`, where this
-  runs it. `CROSS` and `INNER JOIN LATERAL` take the identical subquery on both,
+  target list references the outer relation is answered on a cluster with
+  `42804 attribute 1 of type <inner> has wrong type`, where this runs it.
+  `CROSS` and `INNER JOIN LATERAL` take the identical subquery on both,
   which is why it is tracked as a service defect rather than emulated; see
   [issue #4](https://github.com/Dreamescaper/dsql-emulator/issues/4).
 - **IAM tokens are accepted, not validated.** The backing database is

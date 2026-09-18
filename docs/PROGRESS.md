@@ -6,7 +6,7 @@ Status log for the Aurora DSQL emulator. Append newest work at the top of
 
 ## Current status
 
-**Every milestone is done, and the record holds 232 probes recorded on
+**Every milestone is done, and the record holds 242 probes recorded on
 2026-09-18.** A pipelining client such as Npgsql is adjudicated like any other, from
 the first statement of a transaction onwards. Every refusal the record
 holds matches Aurora DSQL's wording, not only its SQLSTATE. The OCC adjudicator
@@ -51,6 +51,68 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 `127.0.0.1:5433`), `--log-level` (`debug`|`info`|`warn`|`error`).
 
 ## Completed
+
+### Recorded the ten waiting probes; one control was not one (2026-09-18)
+
+242 cases recorded, schema verified before and after, and the emulator matches
+all 242. Four cases carry a `KnownGap`: the pre-existing
+`alter_unique_using_index`, and three of the lateral shapes.
+
+**`ADD COLUMN with constraint` is as wide as it sounds.** `NOT NULL`, `DEFAULT`,
+`CHECK`, `UNIQUE` and `IDENTITY` are each refused, and `alter_add_identity_bigint`
+is refused as readily as the `integer` one — so the column's type really is
+beside the point, which is what the message said and what the rule was widened
+on. `PRIMARY KEY` and `FOREIGN KEY` are included as constraints by any reading.
+An explicit `NULL` and a generated column are deliberately left out and probed
+instead: `NULL` states the default nullability rather than restricting anything.
+
+**The lateral recording corrected the report.** Issue #4's table lists "same,
+without the outer `WHERE`" as passing. It does not: `q_lateral_left_no_outer_where`
+is refused with the same `42804`. So the outer reference in the `WHERE` is not
+required, and an outer reference in the lateral's target list under a `LEFT JOIN`
+is enough on its own. That probe was written as a control and turned out to be a
+third instance; it now carries a `KnownGap` like the other two.
+
+The two real controls held: `CROSS JOIN LATERAL` and `INNER JOIN LATERAL` take
+the identical subquery and pass. Together with the expected type following the
+outer column through a cast, that still reads as a planner defect rather than a
+restriction, so it stays tracked and not emulated.
+
+**The backlog invariant earned its keep the day it was added.** Recording the
+five `ADD COLUMN` probes answered them, and `TestBacklogHoldsOnlyOpenQuestions`
+failed until they moved to `alters`. That is the failure mode it exists to
+prevent, caught on the first run after the rule was written rather than months
+later by someone reading the fixture and wondering what it was for.
+
+Files: `rules/dsql-2026.09.yaml`, `internal/classify/classify_test.go`,
+`internal/conformance/suite.go`, and the golden record.
+
+**Verification.**
+
+```
+recorded alter_add_identity_bigint    error 0A000
+recorded alter_add_column_not_null    error 0A000
+recorded alter_add_column_default     error 0A000
+recorded alter_add_column_check       error 0A000
+recorded alter_add_column_unique      error 0A000
+recorded q_lateral_left_outer_ref     error 42804
+recorded q_lateral_left_no_outer_where error 42804
+recorded q_lateral_cross_outer_ref    SELECT 1
+recorded q_lateral_inner_outer_ref    SELECT 1
+recorded q_lateral_left_outer_ref_cast error 42804
+Recorded 242 cases against aurora-dsql
+
+$ make conformance
+    conformance_test.go:114: 242 cases match the golden record
+
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.388s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	8.697s
+```
+
+**Still open.** `alter_add_column_null` and `alter_add_column_generated` are
+unrecorded, so the rule leaves both through.
 
 ### Track issue #4's lateral-join defect instead of emulating it (2026-09-18)
 
@@ -2659,6 +2721,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | The `ADD COLUMN` rule covers `PRIMARY KEY` and `FOREIGN KEY` unprobed, but not `NULL` or a generated column | Five probed kinds are refused and the message is categorical, so a key or a reference following suit is a safe reading. An explicit `NULL` restricts nothing, and refusing it would block DDL a cluster accepts. |
+| 2026-09-18 | `q_lateral_left_no_outer_where` became a third failing case | The recording disagreed with the report about it. A control that turns out to fail is a finding, not a probe to delete. |
 | 2026-09-18 | Track issue #4's lateral defect, do not emulate it | `CROSS` and `INNER LATERAL` take the same subquery, the expected type follows the outer column through a cast, and the named attribute is the inner relation's -- a planner defect, reported. Emulating it would mean unteaching it when the service is fixed. |
 | 2026-09-18 | Controls recorded beside the failing probes | A fix on the cluster should read as the failing case passing, not as a fixture changing for no stated reason. |
 | 2026-09-18 | Answered probes move out of `backlog` into their subject group | The group is named for open questions and had accumulated settled ones, so the fixture read as a list of unsupported features. Moving them costs nothing -- the comparison is by name -- and leaves the topical files complete. |
@@ -2754,12 +2818,11 @@ with zero protocol assumptions.
 Every milestone is done, the adjudicator included. PLAN.md's verification
 backlog has two open questions, both with probes written. What remains:
 
-### 1. Record the ten waiting probes
+### 1. Record the two remaining probes
 
-Five settle how wide DSQL's `ALTER TABLE ADD COLUMN with constraint not
-supported` is, and five put issue #4's `42804` and its three controls in the
-record, which is what makes the `KnownGap` on it mean anything. One run does
-both.
+`alter_add_column_null` and `alter_add_column_generated` say whether an explicit
+`NULL` or a generated column counts as a constraint for `ADD COLUMN`. The rule
+leaves both through until they are answered.
 
 ### 2. The intermittent conformance failure
 
