@@ -50,6 +50,9 @@ func matches(r rules.Rule, node *pg_query.Node) bool {
 	if len(r.AddConstraintType) > 0 && !addsConstraintOfType(node, r.AddConstraintType) {
 		return false
 	}
+	if len(r.AddColumnConstraint) > 0 && !addsColumnWithConstraint(node, r.AddColumnConstraint) {
+		return false
+	}
 	if len(r.Objtype) > 0 && !contains(r.Objtype, objtype(node)) {
 		return false
 	}
@@ -191,6 +194,31 @@ func alterActions(node *pg_query.Node) []string {
 // addsConstraintWithoutValidation reports whether a statement adds a CHECK or
 // FOREIGN KEY constraint without NOT VALID, which the dialect requires for a
 // constraint added by ALTER TABLE.
+// addsColumnWithConstraint reports whether an ALTER TABLE ADD COLUMN gives the
+// new column a constraint of one of the given kinds. Aurora DSQL refuses a
+// column added with one, saying so about the constraint rather than about the
+// column's type: the recorded alter_add_identity_integer probe answers
+// `ALTER TABLE ADD COLUMN with constraint not supported`.
+func addsColumnWithConstraint(node *pg_query.Node, kinds []string) bool {
+	stmt := node.GetAlterTableStmt()
+	if stmt == nil {
+		return false
+	}
+	for _, node := range stmt.GetCmds() {
+		cmd := node.GetAlterTableCmd()
+		if cmd == nil || cmd.GetSubtype() != pg_query.AlterTableType_AT_AddColumn {
+			continue
+		}
+		for _, con := range cmd.GetDef().GetColumnDef().GetConstraints() {
+			c := con.GetConstraint()
+			if c != nil && contains(kinds, c.GetContype().String()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // addsConstraintOfType reports whether an ALTER TABLE adds a constraint of one
 // of the given kinds.
 //

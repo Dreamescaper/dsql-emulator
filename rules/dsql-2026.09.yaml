@@ -67,13 +67,16 @@ unsupported:
     code: "0A000"
     message: "datatype {type} not supported, identity column type must be bigint"
 
-  # ALTER TABLE ADD COLUMN is restricted the same way, seen twice against the
-  # cluster (2026-09-18) before either run was discarded for unrelated reasons.
-  - id: identity_type_alter_column
+  # ALTER TABLE ADD COLUMN is refused for a different reason than CREATE TABLE
+  # is. The recorded alter_add_identity_integer probe answers about the
+  # constraint, not the type, so the column's type does not enter into it and a
+  # bigint identity column is refused here too. Which other constraint kinds
+  # fall under this is not recorded yet; only the one that is appears here.
+  - id: alter_add_column_constraint
     stmt: alter_table_stmt
-    identity_type_not: ["int8"]
+    add_column_constraint: ["CONSTR_IDENTITY"]
     code: "0A000"
-    message: "datatype {type} not supported, identity column type must be bigint"
+    message: "ALTER TABLE ADD COLUMN with constraint not supported"
 
   # Data types are an allow-list in the documentation: anything absent from the
   # supported-types page is unsupported. This deny-list covers the tested set.

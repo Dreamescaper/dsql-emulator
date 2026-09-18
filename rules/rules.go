@@ -67,6 +67,9 @@ type Rule struct {
 	// AddConstraintType matches an ALTER TABLE that adds a constraint of one of
 	// these kinds, naming them as libpg_query does.
 	AddConstraintType []string `yaml:"add_constraint_type"`
+	// AddColumnConstraint matches an ALTER TABLE ADD COLUMN whose new column
+	// carries a constraint of one of these kinds.
+	AddColumnConstraint []string `yaml:"add_column_constraint"`
 	// LanguageNot lists the languages a function may use; any other language
 	// matches the rule.
 	LanguageNot []string `yaml:"language_not"`

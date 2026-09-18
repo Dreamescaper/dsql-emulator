@@ -682,7 +682,14 @@ is narrower than "a query carries a row value", and pinning it needs a probe
 that reproduces it — the ORM-generated query it was seen with is a nested
 projection over two tables, which none of these four shapes reaches.
 
-Nothing else in the backlog is unanswered.
+Open, with probes written and waiting on a run:
+
+- How wide DSQL's `ALTER TABLE ADD COLUMN with constraint not supported` is. The
+  recorded `alter_add_identity_integer` refusal names the constraint rather than
+  the column's type, so the rule refuses an identity column of any type there,
+  but whether `NOT NULL`, `DEFAULT`, `CHECK` or `UNIQUE` count is unrecorded.
+  `alter_add_identity_bigint` and the four `alter_add_column_*` probes answer it;
+  the emulator forwards all four today.
 
 ## Prior art
 

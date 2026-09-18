@@ -52,6 +52,63 @@ CLI flags: `--listen` (default `127.0.0.1:5432`), `--upstream` (default
 
 ## Completed
 
+### ALTER TABLE ADD COLUMN is refused for the constraint, not the type (2026-09-18)
+
+Reading `backlog.json` turned up a message the conformance run had been
+reporting as advisory all along. `alter_add_identity_integer` is recorded as
+
+```
+0A000 ALTER TABLE ADD COLUMN with constraint not supported
+```
+
+not as the identity-type refusal the rule was written to produce. The rule added
+for issue #2 was right about `CREATE TABLE` and **wrong about `ALTER TABLE` in
+both its reason and its scope**: DSQL is refusing the constraint on the added
+column, which says nothing about the column's type, so a `bigint` identity
+column — the one `CREATE TABLE` accepts — cannot be added to a table that exists
+either. The emulator was letting that through.
+
+The rule now matches an identity constraint on `ADD COLUMN` whatever the type,
+and carries DSQL's own wording. The advisory message note is gone, so the
+recorded messages all match again.
+
+**This is what "advisory" costs.** Messages are reported and not enforced,
+because server wording drifts, and the difference sat in the run output as a
+note rather than a failure. Nothing was wrong with that decision — the SQLSTATE
+and outcome did match — but a note is only as useful as the reading of it, and
+this one had been going by since the probe was recorded.
+
+Five probes were added to find how wide "with constraint" is, because the
+recorded refusal does not say. `alter_add_identity_bigint` asks whether the type
+really is irrelevant, and `alter_add_column_not_null`, `..._default`, `..._check`
+and `..._unique` ask which other kinds count. The emulator forwards all four
+today; only the identity form is a rule, because only it is recorded.
+
+Three notes in the backlog group were stale, describing gaps that rules have
+since closed: `savepoint` and `create_sequence` say "currently not rejected by
+the ruleset" and both are, and `create_view` said the same about a statement
+DSQL allows, so no rule should refuse it. They now say what they confirm.
+
+Files: `rules/rules.go`, `rules/dsql-2026.09.yaml`, `internal/classify/eval.go`,
+`internal/classify/classify_test.go`, `internal/conformance/suite.go`.
+
+**Verification.**
+
+```
+$ make conformance
+    conformance_test.go:114: 232 cases match the golden record
+    (no message notes)
+
+$ make build && make vet && make test && make test-integration
+8 packages ok
+ok  	github.com/Dreamescaper/dsql-emulator/test/conformance	5.358s
+ok  	github.com/Dreamescaper/dsql-emulator/test/integration	9.009s
+```
+
+**Still open.** The five new probes are unrecorded, so what DSQL does with
+`NOT NULL`, `DEFAULT`, `CHECK` and `UNIQUE` on an added column is unknown and no
+rule covers them.
+
 ### Recorded both issues' probes: #3 confirmed, #4 not reproduced (2026-09-18)
 
 232 cases recorded against the cluster, schema verified before and after, and
@@ -2494,6 +2551,8 @@ with zero protocol assumptions.
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-09-18 | The `ADD COLUMN` rule matches an identity constraint whatever the type | The recorded refusal is about the constraint and never mentions the type, so refusing only a non-bigint one would let through the case DSQL also rejects -- the direction that lets a suite pass and a deployment fail. |
+| 2026-09-18 | Probes for the other constraint kinds rather than a wider rule | "With constraint" could mean `NOT NULL` and `DEFAULT` too, and refusing those without evidence would block DDL a cluster accepts. |
 | 2026-09-18 | No rule for composite row values, confirmed by recording | The probes show DSQL accepting every shape tried. A rule would have refused code that runs on a cluster, which is a worse failure than the gap it was meant to close. |
 | 2026-09-18 | The key-constraint rule exempts `USING INDEX` | The record shows DSQL reaching `55000 index is not valid` for that form, which means the statement is accepted and the index is the problem. A blanket refusal would have contradicted a recorded probe. |
 | 2026-09-18 | No rule for composite row values, only probes | Which shapes DSQL rejects is unrecorded, and a rule guessed from one ORM query would refuse some the cluster accepts. An emulator that fails working code blocks development; one that misses a divergence surfaces it later. |
@@ -2583,7 +2642,14 @@ with zero protocol assumptions.
 Every milestone is done, the adjudicator included, and PLAN.md's verification
 backlog is empty. What remains:
 
-### 1. The intermittent conformance failure
+### 1. Record the ADD COLUMN constraint probes
+
+`alter_add_identity_bigint`, `alter_add_column_not_null`, `..._default`,
+`..._check` and `..._unique` settle how wide DSQL's
+"ALTER TABLE ADD COLUMN with constraint not supported" is. Only the identity
+form is a rule until they are answered.
+
+### 2. The intermittent conformance failure
 
 CI lost the client connection partway through one run and passed on a re-run;
 it has not reproduced in twelve local runs. The exchange accounting and the
@@ -2591,14 +2657,14 @@ savepoint injection are the newest session machinery and the first place to
 look. The post-run schema check also misreports a dead connection as a missing
 relation, which is worth separating first so the next occurrence names itself.
 
-### 2. Reproduce issue #4's shape
+### 3. Reproduce issue #4's shape
 
 Composite row values are not refused as a class, so the reported
 `42804 attribute 1 of type "Orders" has wrong type` comes from something
 narrower. A probe that reproduces the ORM's nested projection over two tables
 would pin it.
 
-### 3. Smaller items
+### 4. Smaller items
 
 - IAM tokens are accepted but not validated; validating them means owning the
   client authentication exchange (a SCRAM handshake on the upstream).
